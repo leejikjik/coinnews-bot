@@ -16,7 +16,7 @@ sent_links = set()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ 코인 뉴스 봇이 작동 중입니다!")
 
-async def fetch_coindeskr_news():
+async def fetch_news():
     url = "https://www.coindeskkorea.com/news/articleList.html?sc_section_code=S1N1&view_type=sm"
     headers = {"User-Agent": "Mozilla/5.0"}
     news_items = []
@@ -45,7 +45,7 @@ async def fetch_coindeskr_news():
     return news_items
 
 async def send_news(application):
-    news_list = await fetch_coindeskr_news()
+    news_list = await fetch_news()
     for news in reversed(news_list):
         if news["link"] not in sent_links:
             msg = f"📰 <b>{news['title']}</b>\n📌 {news['summary']}\n🔗 {news['link']}"
@@ -73,7 +73,7 @@ async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    # 뉴스 전송 스케줄러 시작
+    # 뉴스 보내는 루프 비동기로 실행
     asyncio.create_task(scheduler(application))
 
     print("✅ 봇 실행 중...")
