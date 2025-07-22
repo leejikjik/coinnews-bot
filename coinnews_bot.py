@@ -6,28 +6,22 @@ from dotenv import load_dotenv
 from telegram import Bot
 from datetime import datetime
 
-# .env 파일 불러오기
 load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 
 bot = Bot(token=BOT_TOKEN)
-
-# 중복 뉴스 방지
 sent_ids = set()
 
 async def fetch_coinness_news():
     url = "https://kr.coinness.com"
     headers = {"User-Agent": "Mozilla/5.0"}
-
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as res:
             html = await res.text()
             soup = BeautifulSoup(html, "html.parser")
-
             articles = soup.select(".news_list .list_content li")
-
             news_items = []
             for item in articles:
                 link_tag = item.find("a", href=True)
@@ -35,13 +29,10 @@ async def fetch_coinness_news():
                     continue
                 link = url + link_tag["href"]
                 news_id = link.split("/")[-1]
-
                 if news_id in sent_ids:
                     continue
-
                 title = item.find("p", class_="title")
                 summary = item.find("p", class_="summary")
-
                 if title and summary:
                     news_items.append({
                         "id": news_id,
@@ -49,7 +40,6 @@ async def fetch_coinness_news():
                         "summary": summary.get_text(strip=True),
                         "link": link
                     })
-
             return news_items
 
 async def send_news_to_channel():
@@ -76,7 +66,7 @@ async def main_loop():
             await send_news_to_channel()
         except Exception as e:
             print(f"오류 발생: {e}")
-        await asyncio.sleep(60)  # 1분마다 반복
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
     asyncio.run(main_loop())
