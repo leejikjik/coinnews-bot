@@ -1,11 +1,10 @@
 import os
 import asyncio
-import aiohttp
-from bs4 import BeautifulSoup
-from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import aiohttp
+from bs4 import BeautifulSoup
 
 load_dotenv()
 
@@ -14,7 +13,7 @@ CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 sent_links = set()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ 코인 뉴스 봇이 작동 중입니다!")
+    await update.message.reply_text("🟢 코인 뉴스봇이 작동 중입니다!")
 
 async def fetch_news():
     url = "https://www.coindeskkorea.com/news/articleList.html?sc_section_code=S1N1&view_type=sm"
@@ -56,28 +55,21 @@ async def send_news(application):
                     parse_mode="HTML",
                     disable_web_page_preview=True
                 )
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] 전송 완료: {news['title']}")
                 sent_links.add(news["link"])
             except Exception as e:
-                print(f"❌ 전송 실패: {e}")
+                print(f"전송 실패: {e}")
 
 async def scheduler(application):
     while True:
-        try:
-            await send_news(application)
-        except Exception as e:
-            print(f"오류 발생: {e}")
+        await send_news(application)
         await asyncio.sleep(60)
 
 async def main():
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-
-    # 뉴스 보내는 루프 비동기로 실행
-    asyncio.create_task(scheduler(application))
-
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    asyncio.create_task(scheduler(app))
     print("✅ 봇 실행 중...")
-    await application.run_polling()
+    await app.run_polling()
 
 if __name__ == "__main__":
     asyncio.run(main())
