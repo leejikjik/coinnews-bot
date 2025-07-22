@@ -1,54 +1,44 @@
-import os
-import logging
 import asyncio
+import os
 import feedparser
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
 from dotenv import load_dotenv
 
 load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")  # 단일 채널 ID 또는 그룹 ID
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+# RSS 피드 URL (예: Cointelegraph RSS)
 RSS_FEED_URL = "https://cointelegraph.com/rss"
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-
-latest_titles = set()
-
-async def fetch_rss():
-    global latest_titles
-    feed = feedparser.parse(RSS_FEED_URL)
-    new_items = []
-
-    for entry in feed.entries:
-        if entry.title not in latest_titles:
-            latest_titles.add(entry.title)
-            new_items.append(f"📰 <b>{entry.title}</b>\n{entry.link}")
-
-    return new_items
-
-async def send_news(context: ContextTypes.DEFAULT_TYPE):
-    news_items = await fetch_rss()
-    for item in news_items:
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=item, parse_mode="HTML")
-
+# /start 명령어 처리
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 코인 뉴스 봇이 작동 중입니다!")
+
+# 뉴스 전송 함수
+async def send_latest_news(app):
+    feed = feedparser.parse(RSS_FEED_URL)
+    if feed.entries:
+        entry = feed.entries[0]
+        title = entry.title
+        link = entry.link
+        message = f"📰 최신 코인 뉴스:\n\n📌 {title}\n🔗 {link}"
+        await app.bot.send_message(chat_id=CHAT_ID, text=message)
 
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # /start 명령어 등록
     app.add_handler(CommandHandler("start", start))
 
-    # 10분마다 뉴스 전송
-    app.job_queue.run_repeating(send_news, interval=600, first=10)
+    # 봇 실행 전 뉴스 보내기
+    await send_latest_news(app)
 
-    print("🤖 봇이 실행 중입니다...")
+    # 봇 시작
     await app.run_polling()
 
 if __name__ == "__main__":
