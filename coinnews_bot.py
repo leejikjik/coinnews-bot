@@ -4,21 +4,17 @@ import aiohttp
 from bs4 import BeautifulSoup
 from datetime import datetime
 from dotenv import load_dotenv
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
-
-bot = Bot(token=BOT_TOKEN)
 sent_links = set()
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ 코인 뉴스 봇이 작동 중입니다!")
-
 
 async def fetch_coindeskr_news():
     url = "https://www.coindeskkorea.com/news/articleList.html?sc_section_code=S1N1&view_type=sm"
@@ -48,14 +44,13 @@ async def fetch_coindeskr_news():
                         })
     return news_items
 
-
-async def send_news():
+async def send_news(application):
     news_list = await fetch_coindeskr_news()
     for news in reversed(news_list):
         if news["link"] not in sent_links:
             msg = f"📰 <b>{news['title']}</b>\n📌 {news['summary']}\n🔗 {news['link']}"
             try:
-                await bot.send_message(
+                await application.bot.send_message(
                     chat_id=CHANNEL_ID,
                     text=msg,
                     parse_mode="HTML",
@@ -66,24 +61,23 @@ async def send_news():
             except Exception as e:
                 print(f"❌ 전송 실패: {e}")
 
-
-async def scheduler():
+async def scheduler(application):
     while True:
         try:
-            await send_news()
+            await send_news(application)
         except Exception as e:
             print(f"오류 발생: {e}")
         await asyncio.sleep(60)
-
 
 async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    asyncio.create_task(scheduler())
+    # 뉴스 전송 스케줄러 시작
+    asyncio.create_task(scheduler(application))
+
     print("✅ 봇 실행 중...")
     await application.run_polling()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
