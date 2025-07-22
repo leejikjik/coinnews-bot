@@ -1,10 +1,10 @@
 import os
-import asyncio
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import aiohttp
 from bs4 import BeautifulSoup
+import asyncio
 
 load_dotenv()
 
@@ -13,7 +13,7 @@ CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 sent_links = set()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🟢 코인 뉴스봇이 작동 중입니다!")
+    await update.message.reply_text("✅ 코인 뉴스봇이 정상 작동 중입니다.")
 
 async def fetch_news():
     url = "https://www.coindeskkorea.com/news/articleList.html?sc_section_code=S1N1&view_type=sm"
@@ -59,7 +59,7 @@ async def send_news(application):
             except Exception as e:
                 print(f"전송 실패: {e}")
 
-async def scheduler(application):
+async def background_task(application):
     while True:
         await send_news(application)
         await asyncio.sleep(60)
@@ -67,9 +67,14 @@ async def scheduler(application):
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    asyncio.create_task(scheduler(app))
-    print("✅ 봇 실행 중...")
+
+    # 백그라운드 뉴스 전송 태스크 시작
+    app.post_init = lambda app: asyncio.create_task(background_task(app))
+
+    print("✅ 봇 시작됨...")
     await app.run_polling()
 
+# main() 호출부 – asyncio.run() 제거, 에러 안 나게
 if __name__ == "__main__":
-    asyncio.run(main())
+    import asyncio
+    asyncio.get_event_loop().run_until_complete(main())
