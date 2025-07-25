@@ -6,13 +6,14 @@ import httpx
 import pytz
 from flask import Flask
 from threading import Thread
-from telegram import Bot
 from datetime import datetime
 from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
 from email.utils import parsedate_to_datetime
+from telegram import Update, Bot
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Flask 웹서버로 Render Web Service 유지
+# Flask 웹서버
 app = Flask(__name__)
 @app.route('/')
 def home():
@@ -59,15 +60,18 @@ def save_sent_links():
         for link in sent_links:
             f.write(link + "\n")
 
-async def send_news():
+async def send_news(single=False):
     global sent_links
-    sent_links = load_sent_links()
-    print(f"[{datetime.now()}] 뉴스 확인 시작")
-
     feed = feedparser.parse(RSS_FEED_URL)
-    for entry in feed.entries:
-        if entry.link not in sent_links:
-            sent_links.add(entry.link)
+    entries = sorted(feed.entries, key=lambda e: parsedate_to_datetime(e.published))  # 시간순 정렬
+
+    count = 0
+    for entry in entries:
+        if single and count >= 1:
+            break
+        if entry.link not in sent_links or single:
+            if not single:
+                sent_links.add(entry.link)
             translated_title = GoogleTranslator(source='auto', target='ko').translate(entry.title)
             title_prefix = "🚨 [속보] " if any(k in entry.title.lower() for k in ["breaking", "urgent", "alert"]) else "✨ "
             try:
@@ -85,10 +89,11 @@ async def send_news():
                     parse_mode='Markdown',
                     disable_web_page_preview=False
                 )
-                print(f"[SENT] {translated_title}")
+                count += 1
             except Exception as e:
                 print(f"[ERROR] 전송 실패: {e}")
-    save_sent_links()
+    if not single:
+        save_sent_links()
 
 async def send_price_diff(force_first=False):
     global prev_prices
@@ -115,6 +120,21 @@ async def send_price_diff(force_first=False):
 
     prev_prices = current
 
+# Telegram 명령어 핸들러들
+async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_news(single=True)
+
+async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    coins = await fetch_prices()
+    if not coins:
+        await update.message.reply_text("가격 정보를 가져올 수 없습니다.")
+        return
+    lines = ["💰 *현재 코인 가격*\n"]
+    for symbol, price in coins.items():
+        lines.append(f"{symbol}: {price:.2f} USD")
+    await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
+
+# 주 실행 루프
 async def run_bot():
     await send_price_diff(force_first=True)
     while True:
@@ -122,12 +142,16 @@ async def run_bot():
         await send_price_diff()
         await asyncio.sleep(CHECK_INTERVAL)
 
+# 앱 실행 시작
 if __name__ == "__main__":
-    # Flask 서버 실행 (웹 포트 열기용)
+    # Flask 웹서버 시작
     Thread(target=run_web).start()
 
-    try:
-        asyncio.run(run_bot())
-    except KeyboardInterrupt:
-        print("[종료]")
-        save_sent_links()
+    # Telegram 명령어 앱 실행
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("news", news_command))
+    app.add_handler(CommandHandler("price", price_command))
+
+    # 백그라운드 봇 루프 실행
+    Thread(target=lambda: asyncio.run(run_bot())).start()
+    app.run_polling()
