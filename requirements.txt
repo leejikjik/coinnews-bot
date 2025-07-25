@@ -2,6 +2,7 @@ python-telegram-bot[job-queue]==20.3
 Flask
 python-dotenv
 feedparser
-pytz
-httpx
 deep-translator
+APScheduler
+httpx
+pytz
