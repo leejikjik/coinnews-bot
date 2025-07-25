@@ -1,6 +1,7 @@
 import os
-import asyncio
 import logging
+import threading
+import asyncio
 import pytz
 from datetime import datetime
 from flask import Flask
@@ -15,24 +16,25 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# 환경 변수 로드
+# === 환경 변수 ===
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 
-# 로깅 설정
+# === 로깅 ===
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# Flask 앱
+# === Flask 앱 ===
 app = Flask(__name__)
 
-# 가격 저장
-last_prices = {}
-last_sent_links = set()
+@app.route("/")
+def home():
+    return "✅ Flask + Telegram Bot Running!"
 
 # === 가격 추적 ===
+last_prices = {}
 async def fetch_price(symbol):
     url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
     try:
@@ -61,21 +63,20 @@ async def track_prices(context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=result, parse_mode="HTML")
 
 # === 뉴스 전송 ===
+last_sent_links = set()
 async def fetch_and_send_news(context: ContextTypes.DEFAULT_TYPE):
     url = "https://cointelegraph.com/rss"
     feed = feedparser.parse(url)
     sorted_entries = sorted(feed.entries, key=lambda e: e.published_parsed)
-
     for entry in sorted_entries[-5:]:
-        link = entry.link
-        if link in last_sent_links:
+        if entry.link in last_sent_links:
             continue
-        last_sent_links.add(link)
+        last_sent_links.add(entry.link)
         title = GoogleTranslator(source="auto", target="ko").translate(entry.title)
-        msg = f"📰 <b>{title}</b>\n{link}"
+        msg = f"📰 <b>{title}</b>\n{entry.link}"
         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=msg, parse_mode="HTML")
 
-# === 명령어 핸들러 ===
+# === 명령어 ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📡 코인 뉴스 & 가격 추적 봇입니다!\n/news 또는 /price 명령어를 사용해보세요.")
 
@@ -97,12 +98,7 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"📰 <b>{title}</b>\n{entry.link}\n\n"
     await update.message.reply_text(msg.strip(), parse_mode="HTML")
 
-# === Flask Keep-Alive ===
-@app.route("/")
-def index():
-    return "✅ Bot is running!"
-
-# === Bot 메인 ===
+# === 봇 실행 ===
 async def run_bot():
     application = ApplicationBuilder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
@@ -113,9 +109,13 @@ async def run_bot():
     logging.info(">>> Telegram bot starting polling")
     await application.run_polling()
 
-# === 실행 시작 ===
-if __name__ == "__main__":
+# === 메인 실행 (Flask + Bot 병렬) ===
+def start_bot_thread():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.create_task(run_bot())  # 봇 실행
-    app.run(host="0.0.0.0", port=10000)  # Flask 실행
+    loop.run_until_complete(run_bot())
+
+if __name__ == "__main__":
+    bot_thread = threading.Thread(target=start_bot_thread)
+    bot_thread.start()
+    app.run(host="0.0.0.0", port=10000)
