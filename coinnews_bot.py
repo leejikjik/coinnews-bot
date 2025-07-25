@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 from datetime import datetime
 from deep_translator import GoogleTranslator
 
-from telegram import Bot, Defaults
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Bot
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Defaults
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -76,7 +76,7 @@ async def fetch_prices():
                     print(f"[가격 수집 오류] {coin}: {e}")
         await asyncio.sleep(60)
 
-async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_price(update, context: ContextTypes.DEFAULT_TYPE):
     messages = ["<b>📉 주요 코인 가격 추적 (1분 단위)</b>"]
     for coin in coin_list:
         data = coin_cache.get(coin, [])
@@ -90,7 +90,7 @@ async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages.append(f"{coin_list[coin]} | 데이터 수집 중...")
     await update.message.reply_text("\n".join(messages))
 
-async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_start(update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "<b>🤖 CoinNews봇 안내</b>\n"
         "- 실시간 코인 뉴스 자동 전달\n"
