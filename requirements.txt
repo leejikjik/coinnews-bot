@@ -1,7 +1,7 @@
 python-telegram-bot[job-queue]==20.3
+Flask
 python-dotenv
 feedparser
-deep-translator
-httpx
 pytz
-Flask>=2.0.0
+httpx
+deep-translator
