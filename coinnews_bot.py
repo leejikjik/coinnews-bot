@@ -1,6 +1,5 @@
 import os
 import logging
-import threading
 import asyncio
 import pytz
 from datetime import datetime
@@ -107,15 +106,16 @@ async def run_bot():
     application.job_queue.run_repeating(track_prices, interval=60, first=5)
     application.job_queue.run_repeating(fetch_and_send_news, interval=180, first=10)
     logging.info(">>> Telegram bot starting polling")
-    await application.run_polling()
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    await application.updater.idle()
 
-# === 메인 실행 (Flask + Bot 병렬) ===
-def start_bot_thread():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(run_bot())
+# === 전체 앱 실행 (Flask + Bot 병렬)
+def run():
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_bot())
+    app.run(host="0.0.0.0", port=10000)
 
 if __name__ == "__main__":
-    bot_thread = threading.Thread(target=start_bot_thread)
-    bot_thread.start()
-    app.run(host="0.0.0.0", port=10000)
+    run()
