@@ -1,112 +1,112 @@
 import os
 import asyncio
-import feedparser
 import logging
-from dotenv import load_dotenv
+from datetime import datetime, timedelta
+
 from flask import Flask
-from pytz import timezone
-from datetime import datetime
-from deep_translator import GoogleTranslator
 from apscheduler.schedulers.background import BackgroundScheduler
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes
-)
+from dotenv import load_dotenv
+import feedparser
+from deep_translator import GoogleTranslator
 import httpx
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO)
-
-# 환경변수 불러오기
+# Load environment variables
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = int(os.getenv("GROUP_CHAT_ID"))
+CHAT_ID = os.getenv("GROUP_CHAT_ID")
 
-# 한국 시간대 설정
-KST = timezone('Asia/Seoul')
+# Logger setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# 텔레그램 Application 초기화
-app_bot = ApplicationBuilder().token(TOKEN).build()
+# Translation function
+def translate(text):
+    try:
+        return GoogleTranslator(source='auto', target='ko').translate(text)
+    except:
+        return text
 
-# 뉴스 캐시
-latest_titles = []
+# News fetch and send
+async def fetch_and_send_news(app):
+    logger.info("뉴스 수집 시작")
+    feed_url = "https://cointelegraph.com/rss"
+    feed = feedparser.parse(feed_url)
+    if not feed.entries:
+        logger.warning("뉴스 항목 없음")
+        return
+
+    now = datetime.utcnow()
+    latest_time = now - timedelta(minutes=10)
+
+    for entry in reversed(feed.entries):  # 오래된 것부터
+        published = datetime(*entry.published_parsed[:6])
+        if published < latest_time:
+            continue
+
+        title = translate(entry.title)
+        summary = translate(entry.summary)
+        url = entry.link
+
+        message = f"\ud83d\udcf0 <b>{title}</b>\n\n{summary}\n\n<a href=\"{url}\">\ub354 \ubcf4\uae30</a>"
+        try:
+            await app.bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
+            logger.info("뉴스 전송 완료")
+        except Exception as e:
+            logger.error(f"뉴스 전송 실패: {e}")
 
 # /start 명령어
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🧠 코인봇입니다.\n\n- 실시간 코인 시세 (/price)\n- Cointelegraph 최신 뉴스 자동 번역 제공\n- 매 3분마다 뉴스 업데이트")
+    await update.message.reply_text("\ud83d\udd04 코인 뉴스봇 작동 중입니다. /price 입력시 현재 가격 확인 가능합니다.")
 
 # /price 명령어
-last_prices = {}
-
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd"
-    async with httpx.AsyncClient() as client:
-        res = await client.get(url)
-        data = res.json()
-    
-    messages = []
-    for coin in ['bitcoin', 'ethereum']:
-        now_price = data[coin]['usd']
-        prev_price = last_prices.get(coin, now_price)
-        diff = now_price - prev_price
-        change = f"+${diff:.2f}" if diff >= 0 else f"-${abs(diff):.2f}"
-        messages.append(f"{coin.upper()}: ${now_price} ({change})")
-        last_prices[coin] = now_price
+    try:
+        coins = ['bitcoin', 'ethereum']
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(coins)}&vs_currencies=usd"
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url)
+            data = res.json()
 
-    msg = f"📊 실시간 시세\n\n" + "\n".join(messages)
-    await update.message.reply_text(msg)
+        now = datetime.now().strftime('%H:%M:%S')
+        message = f"[{now}] 현재 코인가격:\n"
+        for coin in coins:
+            price = data[coin]['usd']
+            message += f"- {coin.capitalize()}: ${price:,}\n"
 
-# 뉴스 수집 및 번역
-async def fetch_and_send_news():
-    global latest_titles
-    url = "https://cointelegraph.com/rss"
-    feed = feedparser.parse(url)
+        await update.message.reply_text(message)
+    except Exception as e:
+        await update.message.reply_text("가격 정보를 불러오는 데 실패했습니다.")
+        logger.error(f"가격 오류: {e}")
 
-    new_items = []
-    for entry in feed.entries:
-        if entry.title not in latest_titles:
-            translated = GoogleTranslator(source='auto', target='ko').translate(entry.title)
-            published = datetime(*entry.published_parsed[:6])
-            pub_time = datetime.astimezone(published.replace(tzinfo=timezone('UTC')), KST).strftime('%m월 %d일 %H:%M')
-            new_items.append(f"📰 {translated}\n🕒 {pub_time}\n🔗 {entry.link}")
-            latest_titles.append(entry.title)
-
-    # 캐시 크기 제한
-    latest_titles = latest_titles[-20:]
-
-    if new_items:
-        await app_bot.bot.send_message(chat_id=CHAT_ID, text="\n\n".join(new_items))
-
-# Flask keepalive
+# Flask keep-alive
 flask_app = Flask(__name__)
 @flask_app.route("/")
 def index():
-    return "Bot is running"
+    return "Bot is alive"
 
-# 스케줄러 시작 함수
-def start_scheduler():
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(lambda: asyncio.run(fetch_and_send_news()), 'interval', minutes=3)
+def start_scheduler(app):
+    scheduler = BackgroundScheduler(timezone='Asia/Seoul')
+    scheduler.add_job(lambda: asyncio.get_event_loop().create_task(fetch_and_send_news(app)), 'interval', minutes=3)
     scheduler.start()
 
-# 메인 실행
-async def main():
-    # 핸들러 등록
-    app_bot.add_handler(CommandHandler("start", start))
-    app_bot.add_handler(CommandHandler("price", price))
+if __name__ == '__main__':
+    async def main():
+        app = ApplicationBuilder().token(TOKEN).build()
 
-    # 봇 실행
-    await app_bot.initialize()
-    await app_bot.start()
-    await app_bot.updater.start_polling()
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("price", price))
 
-    # 뉴스 스케줄러 실행
-    start_scheduler()
+        start_scheduler(app)
 
-    # keepalive 서버 시작
-    flask_app.run(host="0.0.0.0", port=10000)
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        await app.updater.idle()
 
-if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
+    # Flask 유지
+    flask_app.run(host='0.0.0.0', port=10000)
