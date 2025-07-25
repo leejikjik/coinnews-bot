@@ -5,30 +5,24 @@ import asyncio
 import httpx
 from flask import Flask
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime
 from deep_translator import GoogleTranslator
 
-from telegram import Update, Bot, Defaults
+from telegram import Bot, Defaults
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# 환경 변수 로드
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 RSS_FEED = "https://cointelegraph.com/rss"
 
-# 텔레그램 Defaults
 default_config = Defaults(parse_mode='HTML')
 app_telegram = ApplicationBuilder().token(TOKEN).defaults(default_config).build()
 bot = Bot(token=TOKEN)
 
-# 뉴스 중복 방지
 sent_news = set()
-
-# 가격 저장소
 coin_cache = {}
 
-# 주요 코인
 coin_list = {
     "bitcoin": "BTC",
     "ethereum": "ETH",
@@ -41,7 +35,7 @@ async def fetch_news():
     global sent_news
     while True:
         feed = feedparser.parse(RSS_FEED)
-        entries = sorted(feed.entries, key=lambda x: x.published_parsed)  # 시간순 정렬
+        entries = sorted(feed.entries, key=lambda x: x.published_parsed)
         for entry in entries:
             if entry.link not in sent_news:
                 sent_news.add(entry.link)
@@ -75,13 +69,12 @@ async def fetch_prices():
                         coin_cache[coin] = []
                     coin_cache[coin].append((now, price))
 
-                    # 오래된 데이터 제거 (5개 이상 저장 X)
                     if len(coin_cache[coin]) > 5:
                         coin_cache[coin].pop(0)
 
                 except Exception as e:
                     print(f"[가격 수집 오류] {coin}: {e}")
-        await asyncio.sleep(60)  # 1분마다 추적
+        await asyncio.sleep(60)
 
 async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages = ["<b>📉 주요 코인 가격 추적 (1분 단위)</b>"]
@@ -105,18 +98,15 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- /price: 주요 코인 가격 변화 1분 단위 확인"
     )
 
-# 명령어 등록
 app_telegram.add_handler(CommandHandler("start", handle_start))
 app_telegram.add_handler(CommandHandler("price", handle_price))
 
-# Flask 앱
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def index():
     return "✅ CoinNews 봇 실행 중!"
 
-# 봇 실행
 async def main():
     asyncio.create_task(fetch_news())
     asyncio.create_task(fetch_prices())
