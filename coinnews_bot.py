@@ -1,120 +1,94 @@
 import os
-import asyncio
 import logging
+import asyncio
+from datetime import datetime
+from dotenv import load_dotenv
 import feedparser
+import pytz
 import httpx
 from flask import Flask
-from pytz import timezone
-from datetime import datetime
 from deep_translator import GoogleTranslator
-from apscheduler.schedulers.background import BackgroundScheduler
-from telegram import Update, BotCommand, ReplyKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler,
-    ContextTypes, Application, Defaults
-)
-from dotenv import load_dotenv
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# 환경변수 불러오기
+# .env 환경변수 로드
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 
-# 기본 설정
-logging.basicConfig(level=logging.INFO)
-KST = timezone("Asia/Seoul")
-latest_sent_titles = []
-
-# 봇 명령어 핸들러
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📰 코인 뉴스 알림 봇입니다.\n"
-        "/start : 도움말\n"
-        "/price : 실시간 코인가격\n"
-        "매 시간마다 최신 뉴스와 함께 자동 전송됩니다."
-    )
-
-# 가격 추적 명령어
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        async with httpx.AsyncClient() as client:
-            url = 'https://api.coingecko.com/api/v3/simple/price'
-            params = {
-                'ids': 'bitcoin,ethereum',
-                'vs_currencies': 'usd',
-                'include_24hr_change': 'true'
-            }
-            r = await client.get(url, params=params)
-            data = r.json()
-
-            def fmt(symbol):
-                name = symbol.upper()
-                price = data[symbol]['usd']
-                change = data[symbol]['usd_24h_change']
-                emoji = "🔺" if change > 0 else "🔻"
-                return f"{name}: ${price:,.2f} ({emoji}{abs(change):.2f}%)"
-
-            msg = "📈 실시간 코인 가격 (24H 기준)\n\n"
-            msg += fmt('bitcoin') + "\n"
-            msg += fmt('ethereum')
-            await update.message.reply_text(msg)
-    except Exception as e:
-        await update.message.reply_text("가격 정보를 가져오는 중 오류가 발생했습니다.")
-        logging.error(e)
-
-# 뉴스 전송 함수
-async def send_news():
-    global latest_sent_titles
-    feed = feedparser.parse("https://cointelegraph.com/rss")
-    new_entries = []
-
-    for entry in reversed(feed.entries):  # 오래된 순 정렬
-        if entry.title not in latest_sent_titles:
-            translated_title = GoogleTranslator(source='auto', target='ko').translate(entry.title)
-            translated_summary = GoogleTranslator(source='auto', target='ko').translate(entry.summary)
-            pub_date = datetime(*entry.published_parsed[:6]).astimezone(KST).strftime("%Y-%m-%d %H:%M")
-            new_entries.append(f"📰 {translated_title}\n🕒 {pub_date}\n\n{translated_summary}\n🔗 {entry.link}")
-            latest_sent_titles.append(entry.title)
-
-    if new_entries:
-        for entry in new_entries[-3:]:  # 최근 3개까지만 전송
-            await app_bot.bot.send_message(chat_id=CHAT_ID, text=entry)
-
-# Flask 앱으로 Render 환경 유지용
+# Flask 앱 (Render KeepAlive용)
 app = Flask(__name__)
+@app.route("/")
+def index():
+    return "Bot is running"
 
-@app.route('/')
-def home():
-    return "Bot is running."
+# 로깅 설정
+logging.basicConfig(level=logging.INFO)
 
-# 스케줄러 세팅
-scheduler = BackgroundScheduler()
-scheduler.add_job(lambda: asyncio.run(send_news()), 'interval', minutes=60)
-scheduler.start()
+# 이전 가격 저장
+last_prices = {}
+last_sent_links = set()
 
-# 기본 메시지 포맷
-defaults = Defaults(tzinfo=KST)
+# 코인 가격 가져오기
+async def fetch_price(symbol):
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url)
+        return r.json().get(symbol, {}).get("usd")
 
-# 텔레그램 앱 빌더
-app_bot = ApplicationBuilder().token(TOKEN).defaults(defaults).build()
-app_bot.add_handler(CommandHandler("start", start))
-app_bot.add_handler(CommandHandler("price", price))
+# 가격 추적 작업
+async def track_prices(context: ContextTypes.DEFAULT_TYPE):
+    coins = {"bitcoin": "BTC", "ethereum": "ETH"}
+    now = datetime.now(pytz.timezone("Asia/Seoul")).strftime("%H:%M:%S")
+    result = f"📈 <b>{now} 기준 1분간 가격 변화</b>\n\n"
+    for symbol, name in coins.items():
+        current = await fetch_price(symbol)
+        if not current:
+            continue
+        prev = last_prices.get(symbol, current)
+        change = round(current - prev, 2)
+        arrow = "🔺" if change > 0 else "🔻" if change < 0 else "➡️"
+        result += f"{name}: ${prev} → ${current} {arrow} ({change})\n"
+        last_prices[symbol] = current
+    await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=result, parse_mode="HTML")
 
-# 실행 함수
+# 뉴스 가져오기 및 전송
+async def fetch_and_send_news(context: ContextTypes.DEFAULT_TYPE):
+    url = "https://cointelegraph.com/rss"
+    feed = feedparser.parse(url)
+    sorted_entries = sorted(feed.entries, key=lambda e: e.published_parsed)
+
+    for entry in sorted_entries[-5:]:
+        if entry.link in last_sent_links:
+            continue
+        last_sent_links.add(entry.link)
+        title_ko = GoogleTranslator(source='auto', target='ko').translate(entry.title)
+        msg = f"📰 <b>{title_ko}</b>\n{entry.link}"
+        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=msg, parse_mode="HTML")
+
+# 명령어 핸들러
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📡 코인 뉴스 & 가격 추적 봇입니다!\n/news 또는 /price 명령어를 사용해보세요.")
+
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    coins = {"bitcoin": "BTC", "ethereum": "ETH"}
+    msg = "<b>현재 코인 가격</b>\n\n"
+    for symbol, name in coins.items():
+        p = await fetch_price(symbol)
+        msg += f"{name}: ${p}\n"
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+# 봇 실행
 async def main():
-    await app_bot.initialize()
-    await app_bot.start()
-    await app_bot.updater.start_polling()
-    await app_bot.updater.wait()
+    application = ApplicationBuilder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("price", price))
+    application.job_queue.run_repeating(track_prices, interval=60, first=5)
+    application.job_queue.run_repeating(fetch_and_send_news, interval=180, first=10)
+    await application.run_polling()
 
-# Render 호환: asyncio.run 대신 직접 루프 실행
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(main())
-    except RuntimeError as e:
-        if "already running" in str(e):
-            loop.create_task(main())
-            loop.run_forever()
-        else:
-            raise
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.create_task(main())
+    app.run(host="0.0.0.0", port=10000)
