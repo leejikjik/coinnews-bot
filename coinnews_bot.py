@@ -4,11 +4,22 @@ import asyncio
 import feedparser
 import httpx
 import pytz
+from flask import Flask
+from threading import Thread
 from telegram import Bot
 from datetime import datetime
 from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
 from email.utils import parsedate_to_datetime
+
+# Flask 웹서버로 Render Web Service 유지
+app = Flask(__name__)
+@app.route('/')
+def home():
+    return 'Bot is running!'
+
+def run_web():
+    app.run(host='0.0.0.0', port=10000)
 
 load_dotenv()
 
@@ -112,6 +123,9 @@ async def run_bot():
         await asyncio.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
+    # Flask 서버 실행 (웹 포트 열기용)
+    Thread(target=run_web).start()
+
     try:
         asyncio.run(run_bot())
     except KeyboardInterrupt:
