@@ -3,22 +3,24 @@ import os
 import asyncio
 import feedparser
 import httpx
+import pytz
 from telegram import Bot
 from datetime import datetime
 from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
+from email.utils import parsedate_to_datetime
 
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 RSS_FEED_URL = "https://cointelegraph.com/rss"
-CHECK_INTERVAL = 300  # 5분
+CHECK_INTERVAL = 60  # 1분
 
 bot = Bot(token=TELEGRAM_TOKEN)
 sent_links_file = "sent_links.txt"
 sent_links = set()
-prev_prices = {}  # 코인 가격 저장용
+prev_prices = {}
 
 COINS = {
     "bitcoin": "BTC",
@@ -56,8 +58,15 @@ async def send_news():
         if entry.link not in sent_links:
             sent_links.add(entry.link)
             translated_title = GoogleTranslator(source='auto', target='ko').translate(entry.title)
-            published = entry.get("published", "")
-            message = f"\u2728 *{translated_title}*\n{published}\n{entry.link}"
+            title_prefix = "🚨 [속보] " if any(k in entry.title.lower() for k in ["breaking", "urgent", "alert"]) else "✨ "
+            try:
+                pub_dt = parsedate_to_datetime(entry.published)
+                pub_dt_kst = pub_dt.astimezone(pytz.timezone("Asia/Seoul"))
+                pub_str = pub_dt_kst.strftime("%Y-%m-%d %H:%M (KST)")
+            except:
+                pub_str = "시간 정보 없음"
+
+            message = f"{title_prefix}*{translated_title}*\n🕒 {pub_str}\n{entry.link}"
             try:
                 await bot.send_message(
                     chat_id=TELEGRAM_CHAT_ID,
@@ -77,14 +86,16 @@ async def send_price_diff():
         return
 
     if prev_prices:
-        lines = ["💰 *주요 코인 5분 변동 상황*\n"]
+        lines = ["💰 *1분 단위 코인 변동 상황*\n"]
         for coin, symbol in COINS.items():
             before = prev_prices.get(symbol)
             now = current.get(symbol)
             if before and now:
                 diff = now - before
                 pct = (diff / before) * 100
-                lines.append(f"- {symbol}: {before:.2f} → {now:.2f} (Δ {diff:+.2f}, {pct:+.2f}%)")
+                emoji = "📈" if diff > 0 else "📉"
+                strong = "🔥급등" if abs(pct) >= 3 else ""
+                lines.append(f"{emoji} {symbol}: {before:.2f} → {now:.2f} (Δ {diff:+.2f}, {pct:+.2f}%) {strong}")
         msg = "\n".join(lines)
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='Markdown')
     prev_prices = current
@@ -101,3 +112,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("[종료]")
         save_sent_links()
+        
