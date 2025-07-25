@@ -1,37 +1,46 @@
 import os
-import logging
 import asyncio
+import logging
+from datetime import datetime
 import pytz
+
 import feedparser
 import httpx
-
-from datetime import datetime
 from deep_translator import GoogleTranslator
 from flask import Flask
-from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
+    ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
 )
+from dotenv import load_dotenv
+
+# 환경변수 로드
+load_dotenv()
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # 로깅
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 환경변수 불러오기
-load_dotenv()
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# Flask 앱 (Render용 keep-alive)
+app = Flask(__name__)
 
-# 시간대
+@app.route("/")
+def home():
+    return "✅ 코인 뉴스 & 가격 추적 봇 실행 중"
+
+# 한국 시간
 KST = pytz.timezone("Asia/Seoul")
-sent_news_links = set()
+
+# 전송한 뉴스 링크 저장
+sent_links = set()
+
+# 이전 가격 저장
 previous_prices = {}
 
-# 코인 목록
-coin_list = {
+# 추적할 코인
+coin_map = {
     "bitcoin": "BTC",
     "ethereum": "ETH",
     "solana": "SOL",
@@ -39,109 +48,99 @@ coin_list = {
     "dogecoin": "DOGE"
 }
 
-# Flask (Render용 Keepalive)
-app = Flask(__name__)
-@app.route('/')
-def home():
-    return "✅ 코인 뉴스 봇 정상 작동 중!"
-
-# 뉴스 크롤링 및 전송
-async def fetch_and_send_news(application):
+# 1. 뉴스 가져오기
+async def fetch_and_send_news(context: ContextTypes.DEFAULT_TYPE):
     url = "https://cointelegraph.com/rss"
     feed = feedparser.parse(url)
 
-    for entry in feed.entries[:5]:
-        if entry.link in sent_news_links:
+    for entry in reversed(feed.entries[:5]):  # 오래된 순
+        if entry.link in sent_links:
             continue
-        sent_news_links.add(entry.link)
-        translated_title = GoogleTranslator(source='auto', target='ko').translate(entry.title)
-        kst_time = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
-        message = f"📰 *{translated_title}*\n{entry.link}\n🕒 {kst_time} KST"
-        try:
-            await application.bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
-        except Exception as e:
-            logger.warning(f"뉴스 전송 오류: {e}")
 
-# 가격 조회
-async def fetch_price(symbol):
+        translated = GoogleTranslator(source='auto', target='ko').translate(entry.title)
+        now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+        message = f"\ud83d\udcf0 *{translated}*\n{entry.link}\n\ud83d\udd52 {now_kst} KST"
+
+        await context.bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="Markdown")
+        sent_links.add(entry.link)
+
+# 2. 가격 정보 가져오기
+async def fetch_price(symbol: str):
     try:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
         async with httpx.AsyncClient() as client:
-            res = await client.get(url, timeout=10)
-            return res.json()[symbol]["usd"]
+            res = await client.get(url)
+        return res.json().get(symbol, {}).get("usd")
     except Exception as e:
-        logger.warning(f"{symbol} 가격 불러오기 실패: {e}")
+        logger.error(f"가격 가져오기 실패: {symbol} - {e}")
         return None
 
-# 가격 추적
-async def track_price(application):
-    now = datetime.now(KST).strftime('%H:%M:%S')
-    messages = []
-    for symbol, name in coin_list.items():
+# 3. 가격 추적
+async def track_prices(context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(KST).strftime("%H:%M:%S")
+    updates = []
+
+    for symbol, name in coin_map.items():
         current = await fetch_price(symbol)
+        prev = previous_prices.get(symbol)
+
         if current is None:
             continue
-        previous = previous_prices.get(symbol)
-        previous_prices[symbol] = current
-        if previous:
-            diff = current - previous
-            arrow = "🔺" if diff > 0 else "🔻" if diff < 0 else "➡️"
-            percent = (diff / previous) * 100 if previous != 0 else 0
-            messages.append(f"{name}: ${previous:.2f} → ${current:.2f} {arrow} ({diff:+.2f}, {percent:+.2f}%)")
+
+        if prev is not None:
+            diff = current - prev
+            arrow = "🔻" if diff < 0 else "🔺" if diff > 0 else "➡️"
+            percent = (diff / prev) * 100 if prev != 0 else 0
+            updates.append(
+                f"{name}: ${prev:.2f} → ${current:.2f} {arrow} ({diff:+.2f}, {percent:+.2f}%)"
+            )
         else:
-            messages.append(f"{name}: ${current:.2f} (처음 측정)")
+            updates.append(f"{name}: ${current:.2f} (처음 측정)")
 
-    if messages:
-        final_msg = f"📊 *1분 가격 추적 ({now} KST)*\n\n" + "\n".join(messages)
-        try:
-            await application.bot.send_message(chat_id=CHAT_ID, text=final_msg, parse_mode='Markdown')
-        except Exception as e:
-            logger.warning(f"가격 전송 오류: {e}")
+        previous_prices[symbol] = current
 
-# /start
+    if updates:
+        msg = f"\ud83d\udcc9 *{now} 기준 1분 가격 변화*\n\n" + "\n".join(updates)
+        await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+
+# 4. /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ 코인 뉴스/가격 추적 봇입니다.\n/news, /price 명령어 사용 가능!")
+    await update.message.reply_text("\ud83e\udde0 코인 뉴스 & 실시간 가격 추적 봇입니다!\n/news 또는 /price 명령어를 사용해보세요.")
 
-# /news
+# 5. /news
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = "https://cointelegraph.com/rss"
-    feed = feedparser.parse(url)
-    for entry in feed.entries[:3]:
-        translated_title = GoogleTranslator(source='auto', target='ko').translate(entry.title)
-        kst_time = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
-        msg = f"📰 *{translated_title}*\n{entry.link}\n🕒 {kst_time} KST"
-        await update.message.reply_text(msg, parse_mode='Markdown')
+    class DummyContext: bot = context.bot
+    await fetch_and_send_news(DummyContext())
 
-# /price
+# 6. /price
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages = []
-    for symbol, name in coin_list.items():
-        price = await fetch_price(symbol)
-        if price:
-            messages.append(f"{name}: ${price:.2f}")
-    if messages:
-        await update.message.reply_text("\n".join(messages))
-    else:
-        await update.message.reply_text("가격 정보를 불러올 수 없습니다.")
+    for symbol, name in coin_map.items():
+        current = await fetch_price(symbol)
+        if current:
+            messages.append(f"{name}: ${current:.2f}")
+    await update.message.reply_text("\n".join(messages))
 
-# 메인 봇 실행
-async def start_bot():
-    app_ = ApplicationBuilder().token(TOKEN).build()
+# 7. Bot 실행 함수
+def run():
+    app_builder = ApplicationBuilder().token(TOKEN)
+    app = app_builder.build()
 
-    app_.add_handler(CommandHandler("start", start))
-    app_.add_handler(CommandHandler("news", news))
-    app_.add_handler(CommandHandler("price", price))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("news", news))
+    app.add_handler(CommandHandler("price", price))
 
-    job = app_.job_queue
-    job.run_repeating(lambda ctx: fetch_and_send_news(app_), interval=300, first=5)
-    job.run_repeating(lambda ctx: track_price(app_), interval=60, first=10)
+    # Job 등록
+    job_queue: JobQueue = app.job_queue
+    job_queue.run_repeating(fetch_and_send_news, interval=300, first=5)
+    job_queue.run_repeating(track_prices, interval=60, first=10)
 
-    await app_.initialize()
-    await app_.start()
-    await app_.updater.start_polling()
-
-# 실행
-if __name__ == "__main__":
     loop = asyncio.get_event_loop()
-    loop.create_task(start_bot())
+    loop.create_task(app.initialize())
+    loop.create_task(app.start())
+    loop.create_task(app.updater.start_polling())
+
+# 8. 메인
+if __name__ == "__main__":
+    run()
     app.run(host="0.0.0.0", port=10000)
