@@ -1,45 +1,68 @@
-import asyncio
+# bot.py
 import os
+import asyncio
 import feedparser
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-)
+from telegram import Bot
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")  # 단일 채널 ID 또는 그룹 ID
 
-# RSS 피드 URL (예: Cointelegraph RSS)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 RSS_FEED_URL = "https://cointelegraph.com/rss"
+CHECK_INTERVAL = 300  # 5분
 
-# /start 명령어 처리
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 코인 뉴스 봇이 작동 중입니다!")
+bot = Bot(token=TELEGRAM_TOKEN)
+sent_links_file = "sent_links.txt"
+sent_links = set()
 
-# 뉴스 전송 함수
-async def send_latest_news(app):
-    feed = feedparser.parse(RSS_FEED_URL)
-    if feed.entries:
-        entry = feed.entries[0]
-        title = entry.title
-        link = entry.link
-        message = f"📰 최신 코인 뉴스:\n\n📌 {title}\n🔗 {link}"
-        await app.bot.send_message(chat_id=CHAT_ID, text=message)
+def load_sent_links():
+    if os.path.exists(sent_links_file):
+        with open(sent_links_file, "r", encoding="utf-8") as f:
+            return set(line.strip() for line in f if line.strip())
+    return set()
 
-async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+def save_sent_links():
+    with open(sent_links_file, "w", encoding="utf-8") as f:
+        for link in sent_links:
+            f.write(link + "\n")
 
-    app.add_handler(CommandHandler("start", start))
+async def fetch_and_send():
+    global sent_links
+    sent_links = load_sent_links()
+    print(f"[{datetime.now()}] 봇 시작됨. 이전 뉴스 {len(sent_links)}건 로드됨.")
 
-    # 봇 실행 전 뉴스 보내기
-    await send_latest_news(app)
-
-    # 봇 시작
-    await app.run_polling()
+    while True:
+        try:
+            print(f"[{datetime.now()}] 새 뉴스 체크 중...")
+            feed = feedparser.parse(RSS_FEED_URL)
+            new_count = 0
+            for entry in feed.entries:
+                if entry.link not in sent_links:
+                    sent_links.add(entry.link)
+                    published = entry.get("published", "")
+                    message = f"\u2728 *{entry.title}*\n{published}\n{entry.link}"
+                    try:
+                        await bot.send_message(
+                            chat_id=TELEGRAM_CHAT_ID,
+                            text=message,
+                            parse_mode='Markdown',
+                            disable_web_page_preview=False
+                        )
+                        print(f"[{datetime.now()}] [SENT] {entry.title}")
+                        new_count += 1
+                    except Exception as e:
+                        print(f"[{datetime.now()}] [ERROR] 전송 실패: {e}")
+            if new_count:
+                save_sent_links()
+        except Exception as e:
+            print(f"[{datetime.now()}] [ERROR] 피드 파싱 실패: {e}")
+        await asyncio.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(fetch_and_send())
+    except KeyboardInterrupt:
+        print(f"[{datetime.now()}] 종료됨.")
+        save_sent_links()
