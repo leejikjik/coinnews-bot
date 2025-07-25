@@ -79,28 +79,33 @@ async def send_news():
                 print(f"[ERROR] 전송 실패: {e}")
     save_sent_links()
 
-async def send_price_diff():
+async def send_price_diff(force_first=False):
     global prev_prices
     current = await fetch_prices()
     if not current:
         return
 
-    if prev_prices:
-        lines = ["💰 *1분 단위 코인 변동 상황*\n"]
-        for coin, symbol in COINS.items():
-            before = prev_prices.get(symbol)
-            now = current.get(symbol)
-            if before and now:
-                diff = now - before
-                pct = (diff / before) * 100
-                emoji = "📈" if diff > 0 else "📉"
-                strong = "🔥급등" if abs(pct) >= 3 else ""
-                lines.append(f"{emoji} {symbol}: {before:.2f} → {now:.2f} (Δ {diff:+.2f}, {pct:+.2f}%) {strong}")
+    lines = ["💰 *1분 단위 코인 변동 상황*\n"]
+    for coin, symbol in COINS.items():
+        before = prev_prices.get(symbol)
+        now = current.get(symbol)
+        if before and now:
+            diff = now - before
+            pct = (diff / before) * 100
+            emoji = "📈" if diff > 0 else "📉"
+            strong = "🔥급등" if abs(pct) >= 3 else ""
+            lines.append(f"{emoji} {symbol}: {before:.2f} → {now:.2f} (Δ {diff:+.2f}, {pct:+.2f}%) {strong}")
+        elif force_first:
+            lines.append(f"🔹 {symbol}: 현재 가격 {now:.2f}")
+
+    if force_first or prev_prices:
         msg = "\n".join(lines)
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='Markdown')
+
     prev_prices = current
 
 async def run_bot():
+    await send_price_diff(force_first=True)
     while True:
         await send_news()
         await send_price_diff()
@@ -112,4 +117,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("[종료]")
         save_sent_links()
-        
