@@ -1,6 +1,14 @@
 import logging
+import os
+from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, CallbackContext
+
+# .env 파일 로드
+load_dotenv()
+
+# 텔레그램 봇 토큰을 환경 변수에서 불러오기
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # 로깅 설정
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -21,8 +29,12 @@ def price(update: Update, context: CallbackContext) -> None:
     update.message.reply_text('Fetching price data...')
 
 def main():
-    # 텔레그램 봇 토큰을 넣어주세요
-    updater = Updater("YOUR_BOT_TOKEN", use_context=True)
+    if TELEGRAM_TOKEN is None:
+        logger.error("Bot token is missing in environment variables!")
+        return
+    
+    # 텔레그램 봇 토큰을 환경 변수에서 불러옴
+    updater = Updater(TELEGRAM_TOKEN, use_context=True)
     
     dp = updater.dispatcher
     
