@@ -66,13 +66,16 @@ def fetch_prices():
 
 # 텔레그램 명령어 핸들러
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("Start command received.")
     await update.message.reply_text("👋 안녕하세요! 코인 뉴스 & 가격 추적 봇입니다.\n\n/news : 최신 뉴스\n/price : 현재 가격")
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("News command received.")
     text = fetch_news()
     await update.message.reply_text(text)
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("Price command received.")
     text = fetch_prices()
     await update.message.reply_text(text)
 
