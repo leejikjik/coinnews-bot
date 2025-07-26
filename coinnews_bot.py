@@ -4,7 +4,7 @@ import logging
 from flask import Flask
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from feedparser import parse
 from deep_translator import GoogleTranslator
 import requests
@@ -112,8 +112,8 @@ async def run_bot():
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
 
-    # Flask 서버와 봇을 asyncio 루프에서 병렬 실행
+    # Flask 서버와 텔레그램 봇을 asyncio 루프에서 병렬 실행
     loop.create_task(run_bot())
 
     # Flask 서버 실행
-    app.run(host='0.0.0.0', port=10000)
+    app.run(host='0.0.0.0', port=10000, use_reloader=False)
