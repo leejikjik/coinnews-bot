@@ -109,7 +109,6 @@ async def run_bot():
 
     await application.initialize()
     await application.start_polling()
-    await application.updater.wait()
 
 # 메인 진입점
 if __name__ == '__main__':
