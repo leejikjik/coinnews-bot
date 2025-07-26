@@ -1,5 +1,3 @@
-# coinnews_bot.py
-
 import os
 import asyncio
 import logging
@@ -114,7 +112,7 @@ async def run_bot():
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
 
-    # Flask 서버와 봇을 병렬로 실행
+    # Flask 서버와 봇을 asyncio 루프에서 병렬 실행
     loop.create_task(run_bot())
 
     # Flask 서버 실행
