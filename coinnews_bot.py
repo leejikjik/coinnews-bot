@@ -1,53 +1,41 @@
-import asyncio
 import logging
-from flask import Flask
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from dotenv import load_dotenv
-import os
+from telegram.ext import Updater, CommandHandler, CallbackContext
 
-# 환경 변수 로드
-load_dotenv()
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# 로깅 설정
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger()
 
-# Flask 앱 설정
-app = Flask(__name__)
+def start(update: Update, context: CallbackContext) -> None:
+    logger.info("Received /start command from user: %s", update.message.from_user.username)  # 로그 기록
+    update.message.reply_text('Hello, I am your bot!')
 
-@app.route('/')
-def home():
-    return 'Bot is running!'
+def news(update: Update, context: CallbackContext) -> None:
+    logger.info("Received /news command from user: %s", update.message.from_user.username)  # 로그 기록
+    # 뉴스 정보를 처리하는 코드 추가
+    update.message.reply_text('Fetching the latest news...')
 
-# 텔레그램 봇 명령어 처리
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Start command received.")  # 명령어 수신 확인
-    await update.message.reply_text("Hello, I'm your Coin news bot!")
+def price(update: Update, context: CallbackContext) -> None:
+    logger.info("Received /price command from user: %s", update.message.from_user.username)  # 로그 기록
+    # 가격 데이터를 처리하는 코드 추가
+    update.message.reply_text('Fetching price data...')
 
-async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("News command received.")  # 명령어 수신 확인
-    await update.message.reply_text("Fetching news...")
-
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Price command received.")  # 명령어 수신 확인
-    await update.message.reply_text("Fetching prices...")
-
-# 텔레그램 봇 초기화 및 실행
-async def run_bot():
-    application = ApplicationBuilder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("news", news))
-    application.add_handler(CommandHandler("price", price))
+def main():
+    # 텔레그램 봇 토큰을 넣어주세요
+    updater = Updater("YOUR_BOT_TOKEN", use_context=True)
+    
+    dp = updater.dispatcher
+    
+    # 명령어 처리기 추가
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("news", news))
+    dp.add_handler(CommandHandler("price", price))
 
     # 봇 시작
-    await application.initialize()
-    await application.start_polling()
+    updater.start_polling()
 
-# Flask 서버 및 텔레그램 봇 동시에 실행
+    # 봇이 계속 실행되도록 대기
+    updater.idle()
+
 if __name__ == '__main__':
-    loop = asyncio.get_event_loop()
-
-    # 텔레그램 봇을 비동기적으로 실행
-    loop.create_task(run_bot())
-
-    # Flask 서버 실행
-    app.run(host="0.0.0.0", port=10000, use_reloader=False)
+    main()
