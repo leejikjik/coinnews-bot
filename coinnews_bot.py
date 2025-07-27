@@ -15,17 +15,17 @@ from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
-    defaults,
+    Defaults,  # ✅ 여기 추가됨
 )
 
-# 환경변수 로드
+# 환경변수
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# KST 시간대 설정
+# 시간대
 KST = timezone(timedelta(hours=9))
 
-# 로깅
+# 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ app = Flask(__name__)
 def home():
     return "Bot is running"
 
-# 봇 명령어 핸들러
+# 명령어 핸들러
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🟢 봇이 작동 중입니다.\n/news : 최신 뉴스\n/price : 현재 시세")
 
@@ -48,7 +48,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await fetch_price()
     await update.message.reply_text(msg)
 
-# 뉴스 수집 및 번역
+# 뉴스 파싱 및 번역
 async def fetch_news():
     try:
         url = "https://cointelegraph.com/rss"
@@ -65,7 +65,7 @@ async def fetch_news():
         logger.error(f"[뉴스 오류] {e}")
         return "❌ 뉴스 불러오기 실패"
 
-# 시세 수집
+# 시세 파싱
 async def fetch_price():
     try:
         url = "https://api.coingecko.com/api/v3/simple/price"
@@ -73,7 +73,7 @@ async def fetch_price():
             "ids": "bitcoin,ethereum,ripple,solana,dogecoin",
             "vs_currencies": "usd",
         }
-        headers = {"User-Agent": "Mozilla/5.0"}  # 필수
+        headers = {"User-Agent": "Mozilla/5.0"}
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, params=params, headers=headers)
             data = resp.json()
@@ -90,7 +90,7 @@ async def fetch_price():
         logger.error(f"[시세 오류] {e}")
         return "❌ 시세 불러오기 실패"
 
-# 자동 전송 기능
+# 자동 전송
 async def send_auto_news(app: Application):
     msg = await fetch_news()
     await app.bot.send_message(chat_id=CHAT_ID, text=f"🗞️ 코인 뉴스 업데이트\n\n{msg}")
@@ -99,7 +99,7 @@ async def send_auto_price(app: Application):
     msg = await fetch_price()
     await app.bot.send_message(chat_id=CHAT_ID, text=f"💰 실시간 코인 시세\n\n{msg}")
 
-# APScheduler 스케줄러
+# 스케줄러
 def start_scheduler(app: Application):
     scheduler = BackgroundScheduler()
     scheduler.add_job(lambda: asyncio.run(send_auto_news(app)), 'interval', hours=1)
@@ -107,8 +107,9 @@ def start_scheduler(app: Application):
     scheduler.start()
     logger.info("✅ 스케줄러 실행됨")
 
-# Telegram 봇 실행
+# 텔레그램 봇 시작
 async def run_bot():
+    defaults = Defaults(parse_mode='HTML')
     application = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -124,7 +125,7 @@ async def run_bot():
     await application.updater.start_polling()
     await application.updater.idle()
 
-# Flask + Bot 병렬 실행
+# 병렬 실행 (Flask + Bot)
 def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
