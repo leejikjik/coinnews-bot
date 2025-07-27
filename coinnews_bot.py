@@ -21,17 +21,13 @@ price_cache = {}
 bot_started = False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("/start 수신")
-    await update.message.reply_text("코인 뉴스봇입니다!")
+    await update.message.reply_text("✅ 코인 뉴스봇 작동 중입니다!")
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("/news 수신")
-    msgs = get_translated_news()
-    for m in msgs:
-        await update.message.reply_text(m, parse_mode="HTML")
+    for msg in get_translated_news():
+        await update.message.reply_text(msg, parse_mode="HTML")
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("/price 수신")
     msg = get_price_change_message()
     await update.message.reply_text(msg, parse_mode="HTML")
 
@@ -71,7 +67,7 @@ def get_price_change_message():
             price_cache[coin] = now
     except Exception as e:
         logging.error(f"가격 데이터 오류: {e}")
-        return "❌ 가격 데이터를 가져올 수 없습니다."
+        return "❌ 가격 정보를 가져올 수 없습니다."
     return "\n".join(msg_lines)
 
 def start_scheduler(app_bot):
@@ -79,7 +75,7 @@ def start_scheduler(app_bot):
     scheduler.add_job(lambda: app_bot.bot.send_message(chat_id=CHAT_ID, text=get_price_change_message(), parse_mode="HTML"), "interval", minutes=1)
     scheduler.add_job(lambda: [app_bot.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="HTML") for msg in get_translated_news()], "interval", minutes=15)
     scheduler.start()
-    logging.info("스케줄러 실행됨")
+    logging.info("⏱ 스케줄러 작동 시작됨")
 
 async def run_bot():
     app_bot = Application.builder().token(TOKEN).build()
@@ -90,17 +86,18 @@ async def run_bot():
     await app_bot.initialize()
     await app_bot.start()
     await app_bot.updater.start_polling()
-    logging.info("✅ 텔레그램 봇 실행 완료")
+    logging.info("✅ 텔레그램 봇 작동 시작")
 
 @app.route("/")
 def index():
     global bot_started
     if not bot_started:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         loop.create_task(run_bot())
         bot_started = True
         logging.info("▶️ 봇 루프 시작됨")
-    return "✅ Telegram Coin Bot is Running!"
+    return "✅ Coin News Bot is Running!"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
