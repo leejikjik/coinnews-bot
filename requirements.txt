@@ -1,8 +1,7 @@
 python-telegram-bot[job-queue]==20.3
 Flask==3.1.1
 APScheduler==3.10.4
-deep-translator
-feedparser
-httpx
-requests
 python-dotenv
+feedparser
+deep-translator
+httpx
