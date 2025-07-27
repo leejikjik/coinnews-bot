@@ -81,7 +81,10 @@ async def run_bot():
     job.run_repeating(send_price, interval=60, first=15)
 
     logger.info("✅ Telegram Bot Started")
-    await app.run_polling()
+    # 여기서 run_polling 대신 start + idle 분리 실행
+    await app.start()
+    await app.updater.start_polling()
+    await app.updater.idle()
 
 if __name__ == "__main__":
     scheduler = BackgroundScheduler()
@@ -94,6 +97,7 @@ if __name__ == "__main__":
     Thread(target=lambda: flask_app.run(host="0.0.0.0", port=10000)).start()
 
     try:
-        loop.run_until_complete(run_bot())
+        loop.create_task(run_bot())
+        loop.run_forever()
     finally:
         loop.close()
