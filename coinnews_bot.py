@@ -1,4 +1,4 @@
-# 파일명: coinnews_bot.py
+# coinnews_bot.py
 import os
 import asyncio
 import logging
@@ -16,11 +16,9 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Flask
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
@@ -29,7 +27,6 @@ def home():
 
 KST = timezone("Asia/Seoul")
 
-# 뉴스 번역 및 메시지 생성
 def fetch_translated_news(limit=3):
     feed = feedparser.parse("https://cointelegraph.com/rss")
     messages = []
@@ -41,7 +38,6 @@ def fetch_translated_news(limit=3):
         messages.append(f"📰 {translated}\n{published.strftime('%Y-%m-%d %H:%M')} KST\n{link}")
     return "\n\n".join(messages)
 
-# 시세 추적
 async def get_price_change():
     coins = ["bitcoin", "ethereum", "solana", "ripple", "dogecoin"]
     url = "https://api.coingecko.com/api/v3/simple/price"
@@ -63,7 +59,6 @@ async def get_price_change():
         logger.error(f"시세 오류: {e}")
         return "❌ 시세 데이터를 불러올 수 없습니다."
 
-# 핸들러
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 코인 뉴스 및 시세 봇입니다.\n/news : 뉴스\n/price : 시세")
 
@@ -75,7 +70,6 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await get_price_change()
     await update.message.reply_text(msg)
 
-# 자동 전송
 async def send_auto_news(app: Application):
     try:
         news = fetch_translated_news()
@@ -90,7 +84,6 @@ async def send_auto_price(app: Application):
     except Exception as e:
         logger.error(f"[시세 전송 실패] {e}")
 
-# 메인 봇 실행
 async def run_bot():
     application = Application.builder().token(BOT_TOKEN).build()
 
@@ -102,7 +95,6 @@ async def run_bot():
     await application.start()
     await application.updater.start_polling()
 
-    # APScheduler
     scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
     scheduler.add_job(lambda: asyncio.create_task(send_auto_news(application)), IntervalTrigger(minutes=10))
     scheduler.add_job(lambda: asyncio.create_task(send_auto_price(application)), IntervalTrigger(minutes=1))
@@ -111,8 +103,10 @@ async def run_bot():
     logger.info("✅ Telegram 봇이 시작되었습니다.")
     await application.updater.wait_until_disconnected()
 
-# 진입점
-if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(run_bot())
+def start_flask():
     flask_app.run(host="0.0.0.0", port=10000)
+
+if __name__ == "__main__":
+    import threading
+    threading.Thread(target=start_flask).start()
+    asyncio.run(run_bot())
