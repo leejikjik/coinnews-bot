@@ -10,7 +10,7 @@ import feedparser
 from deep_translator import GoogleTranslator
 import httpx
 
-# 환경변수 로딩
+# .env 로딩
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -20,31 +20,29 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# Flask 앱 설정
+# Flask 앱 생성
 app = Flask(__name__)
 
 # 번역기
 translator = GoogleTranslator(source="en", target="ko")
 
-# 명령어: /start
+# 명령어 핸들러들
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("📥 /start 명령어 수신")
     await update.message.reply_text("코인 뉴스봇에 오신 것을 환영합니다!")
 
-# 명령어: /news
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("📥 /news 명령어 수신")
     messages = get_translated_news()
     for msg in messages:
         await update.message.reply_text(msg, parse_mode="HTML")
 
-# 명령어: /price
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("📥 /price 명령어 수신")
     msg = get_price_change_message()
     await update.message.reply_text(msg, parse_mode="HTML")
 
-# 뉴스 가져오기 및 번역
+# 뉴스 번역
 def get_translated_news():
     feed_url = "https://cointelegraph.com/rss"
     feed = feedparser.parse(feed_url)
@@ -52,15 +50,16 @@ def get_translated_news():
     messages = []
     for entry in reversed(entries):
         try:
-            translated_title = translator.translate(entry.title)
-            translated_summary = translator.translate(entry.summary)
-            message = f"<b>{translated_title}</b>\n{translated_summary}\n<a href='{entry.link}'>[기사 보기]</a>"
+            title = translator.translate(entry.title)
+            summary = translator.translate(entry.summary)
+            link = entry.link
+            message = f"<b>{title}</b>\n{summary}\n<a href='{link}'>[기사 보기]</a>"
             messages.append(message)
         except Exception as e:
-            logging.error(f"❌ 번역 실패: {e}")
+            logging.error(f"❌ 뉴스 번역 오류: {e}")
     return messages
 
-# 가격 변동 메시지 생성
+# 코인 가격 추적
 price_cache = {}
 
 def get_price_change_message():
@@ -75,50 +74,50 @@ def get_price_change_message():
         data = response.json()
 
         for coin in coins:
-            now_price = data[coin]["krw"]
-            old_price = price_cache.get(coin, now_price)
-            diff = now_price - old_price
+            now = data[coin]["krw"]
+            old = price_cache.get(coin, now)
+            diff = now - old
             emoji = "🔼" if diff > 0 else "🔽" if diff < 0 else "⏺"
-            percent = (diff / old_price * 100) if old_price else 0
-            msg_lines.append(f"{symbols[coin]}: {now_price:,.0f}원 {emoji} ({percent:+.2f}%)")
-            price_cache[coin] = now_price
-
+            pct = (diff / old * 100) if old else 0
+            msg_lines.append(f"{symbols[coin]}: {now:,.0f}원 {emoji} ({pct:+.2f}%)")
+            price_cache[coin] = now
     except Exception as e:
-        logging.error(f"❌ 가격 API 오류: {e}")
-        return "가격 정보를 불러오지 못했습니다."
-
+        logging.error(f"❌ 가격 정보 오류: {e}")
+        return "❌ 코인 가격을 가져오지 못했습니다."
+    
     return "\n".join(msg_lines)
 
-# 스케줄러 시작
-def start_scheduler(bot_app):
+# 스케줄러
+def start_scheduler(app_bot):
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: bot_app.bot.send_message(chat_id=CHAT_ID, text=get_price_change_message(), parse_mode="HTML"), trigger='interval', minutes=1)
-    scheduler.add_job(lambda: [bot_app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="HTML") for msg in get_translated_news()], trigger='interval', minutes=15)
+    scheduler.add_job(lambda: app_bot.bot.send_message(chat_id=CHAT_ID, text=get_price_change_message(), parse_mode="HTML"), trigger="interval", minutes=1)
+    scheduler.add_job(lambda: [app_bot.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="HTML") for msg in get_translated_news()], trigger="interval", minutes=15)
     scheduler.start()
-    logging.info("✅ 뉴스/시세 스케줄러 시작됨")
+    logging.info("✅ 스케줄러 실행됨")
 
-# Flask 라우트
+# 텔레그램 봇 실행
+async def run_bot():
+    app_bot = Application.builder().token(TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("news", news))
+    app_bot.add_handler(CommandHandler("price", price))
+    start_scheduler(app_bot)
+    await app_bot.initialize()
+    await app_bot.start()
+    await app_bot.updater.start_polling()
+    logging.info("✅ 텔레그램 봇 작동 중")
+
+# Flask + Telegram 병렬 실행
+@app.before_first_request
+def start_bot_in_background():
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_bot())
+    logging.info("▶️ Telegram 봇 루프 시작 요청됨")
+
 @app.route("/")
 def index():
     return "✅ Telegram Coin Bot is Running!"
 
-# 텔레그램 봇 실행 함수
-async def run_telegram_bot():
-    app_bot = Application.builder().token(TOKEN).build()
-
-    app_bot.add_handler(CommandHandler("start", start))
-    app_bot.add_handler(CommandHandler("news", news))
-    app_bot.add_handler(CommandHandler("price", price))
-
-    start_scheduler(app_bot)
-
-    await app_bot.initialize()
-    await app_bot.start()
-    await app_bot.updater.start_polling()
-    logging.info("✅ 텔레그램 봇 작동 시작됨")
-
-# 메인 실행
+# 실행
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(run_telegram_bot())
     app.run(host="0.0.0.0", port=10000)
