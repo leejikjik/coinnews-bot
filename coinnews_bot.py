@@ -1,103 +1,118 @@
+# coinnews_bot.py
+
 import os
 import logging
-import asyncio
 import feedparser
 import requests
 from flask import Flask
-from dotenv import load_dotenv
+from apscheduler.schedulers.background import BackgroundScheduler
 from deep_translator import GoogleTranslator
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
-)
-from apscheduler.schedulers.background import BackgroundScheduler
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from dotenv import load_dotenv
 
 load_dotenv()
+
+# 환경변수
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# 로깅
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-flask_app = Flask(__name__)
+# Flask 서버
+app_flask = Flask(__name__)
 
-@flask_app.route("/")
+@app_flask.route("/")
 def home():
-    return "✅ Telegram Coin Bot Running"
+    return "Bot is running!"
 
-latest_news_links = set()
-
-async def send_news(context: ContextTypes.DEFAULT_TYPE):
-    feed = feedparser.parse("https://cointelegraph.com/rss")
-    messages = []
-    for entry in reversed(feed.entries[-5:]):
-        if entry.link not in latest_news_links:
-            latest_news_links.add(entry.link)
-            translated = GoogleTranslator(source="auto", target="ko").translate(entry.title)
-            messages.append(f"📰 {translated}\n{entry.link}")
-    for msg in messages:
-        await context.bot.send_message(chat_id=CHAT_ID, text=msg)
-
-async def send_price(context: ContextTypes.DEFAULT_TYPE):
-    coins = ["bitcoin", "ethereum", "ripple", "solana", "dogecoin"]
-    try:
-        response = requests.get("https://api.coingecko.com/api/v3/simple/price", params={
-            "ids": ",".join(coins),
-            "vs_currencies": "usd",
-            "include_24hr_change": "true"
-        })
-        data = response.json()
-    except Exception as e:
-        await context.bot.send_message(chat_id=CHAT_ID, text=f"❌ 시세 오류: {e}")
-        return
-
-    msg = "💰 실시간 코인 시세:\n"
-    for coin in coins:
-        price = data.get(coin, {}).get("usd")
-        change = data.get(coin, {}).get("usd_24h_change")
-        if price is not None and change is not None:
-            msg += f"{coin.capitalize()}: ${price:.2f} ({change:+.2f}%)\n"
-    await context.bot.send_message(chat_id=CHAT_ID, text=msg)
-
+# 텔레그램 핸들러 함수
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 코인 뉴스 및 시세 봇입니다!")
+    await update.message.reply_text("🟢 코인 뉴스 & 시세 봇 작동 중입니다.")
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_news(context)
+    await send_news()
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_price(context)
+    await send_price()
 
-async def run_bot():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("news", news))
-    app.add_handler(CommandHandler("price", price))
+# 뉴스 전송
+async def send_news():
+    try:
+        url = "https://cointelegraph.com/rss"
+        feed = feedparser.parse(url)
+        messages = []
 
-    job: JobQueue = app.job_queue
-    job.run_repeating(send_news, interval=600, first=10)
-    job.run_repeating(send_price, interval=60, first=15)
+        for entry in feed.entries[:5][::-1]:  # 오래된 → 최신순
+            title = entry.title
+            link = entry.link
+            translated = GoogleTranslator(source='auto', target='ko').translate(title)
+            messages.append(f"📰 <b>{translated}</b>\n🔗 {link}")
 
-    logger.info("✅ Telegram Bot Started")
-    # 여기서 run_polling 대신 start + idle 분리 실행
-    await app.start()
-    await app.updater.start_polling()
-    await app.updater.idle()
+        if messages:
+            text = "\n\n".join(messages)
+            await telegram_app.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="HTML")
 
-if __name__ == "__main__":
+    except Exception as e:
+        logging.error(f"뉴스 전송 오류: {e}")
+
+# 시세 전송
+async def send_price():
+    try:
+        coins = ["bitcoin", "ethereum", "ripple", "solana", "dogecoin"]
+        ids = ",".join(coins)
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd"
+        response = requests.get(url, timeout=10)
+        result = response.json()
+
+        if not result:
+            await telegram_app.bot.send_message(chat_id=CHAT_ID, text="⚠️ 시세 데이터를 불러오지 못했습니다.")
+            return
+
+        lines = [f"📈 실시간 코인 시세 (USD 기준):"]
+        for coin in coins:
+            name = coin.capitalize()
+            price = result.get(coin, {}).get("usd", "N/A")
+            lines.append(f"{name}: ${price:,}")
+
+        text = "\n".join(lines)
+        await telegram_app.bot.send_message(chat_id=CHAT_ID, text=text)
+
+    except Exception as e:
+        logging.error(f"시세 전송 오류: {e}")
+
+# 텔레그램 봇 실행 함수
+async def run_telegram():
+    global telegram_app
+    telegram_app = ApplicationBuilder().token(TOKEN).build()
+
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(CommandHandler("news", news))
+    telegram_app.add_handler(CommandHandler("price", price))
+
+    await telegram_app.initialize()
+    await telegram_app.start()
+    logging.info("✅ Telegram Bot Started")
+    await telegram_app.updater.start_polling()
+    await telegram_app.updater.idle()
+
+# 스케줄러 설정
+def start_scheduler():
     scheduler = BackgroundScheduler()
+    scheduler.add_job(lambda: telegram_app.create_task(send_news()), "interval", minutes=10)
+    scheduler.add_job(lambda: telegram_app.create_task(send_price()), "interval", minutes=1)
     scheduler.start()
+    logging.info("✅ Scheduler Started")
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    from threading import Thread
-    Thread(target=lambda: flask_app.run(host="0.0.0.0", port=10000)).start()
+# 병렬 실행
+if __name__ == "__main__":
+    import asyncio
+    loop = asyncio.get_event_loop()
 
     try:
-        loop.create_task(run_bot())
-        loop.run_forever()
-    finally:
-        loop.close()
+        loop.create_task(run_telegram())
+        start_scheduler()
+        app_flask.run(host="0.0.0.0", port=10000)
+    except Exception as e:
+        logging.error(f"실행 오류: {e}")
