@@ -2,5 +2,5 @@ python-telegram-bot[job-queue]==20.3
 Flask
 feedparser
 deep-translator
-requests
 APScheduler
+requests
