@@ -3,6 +3,4 @@ Flask
 python-dotenv
 feedparser
 deep-translator
-APScheduler
-httpx
-pytz
+requests
