@@ -33,19 +33,23 @@ translator = GoogleTranslator(source="auto", target="ko")
 
 # 뉴스 전송 함수
 async def send_news(application):
-    url = "https://cointelegraph.com/rss"
-    feed = feedparser.parse(url)
-    if not feed.entries:
-        return
+    try:
+        url = "https://cointelegraph.com/rss"
+        feed = feedparser.parse(url)
+        if not feed.entries:
+            return
 
-    messages = []
-    for entry in reversed(feed.entries[-5:]):
-        title = translator.translate(entry.title)
-        link = entry.link
-        messages.append(f"📰 {title}\n{link}\n")
+        messages = []
+        for entry in reversed(feed.entries[-5:]):
+            title = translator.translate(entry.title)
+            link = entry.link
+            messages.append(f"📰 {title}\n{link}\n")
 
-    text = "\n".join(messages)
-    await application.bot.send_message(chat_id=CHAT_ID, text=text)
+        text = "\n".join(messages)
+        await application.bot.send_message(chat_id=CHAT_ID, text=text)
+
+    except Exception as e:
+        logger.error(f"자동 뉴스 전송 오류: {e}")
 
 # 명령어 핸들러
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -86,7 +90,7 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ 시세를 불러오는 중 오류가 발생했습니다.")
 
 # 봇 실행 함수
-def start_bot():
+def run_bot():
     import asyncio
     asyncio.set_event_loop(asyncio.new_event_loop())
     loop = asyncio.get_event_loop()
@@ -99,19 +103,20 @@ def start_bot():
         app_bot.add_handler(CommandHandler("news", news_cmd))
         app_bot.add_handler(CommandHandler("price", price_cmd))
 
-        # 뉴스 자동 전송 스케줄
+        # 자동 뉴스 스케줄
         scheduler = BackgroundScheduler()
-        scheduler.add_job(lambda: asyncio.run(send_news(app_bot)), "interval", minutes=60)
+        scheduler.add_job(lambda: asyncio.create_task(send_news(app_bot)), "interval", minutes=60)
         scheduler.start()
 
         await app_bot.initialize()
         await app_bot.start()
-        await app_bot.updater.start_polling()
-        await app_bot.updater.idle()
+        await app_bot.updater.start_polling()  # ❌ 제거해야 함 (v20.3에서 제거됨)
+        # 정답은 아래 run_polling() 사용!
+        await app_bot.run_polling()
 
     loop.run_until_complete(main())
 
-# Flask + 봇 실행
+# Flask + 봇 병렬 실행
 if __name__ == "__main__":
-    threading.Thread(target=start_bot).start()
+    threading.Thread(target=run_bot).start()
     app.run(host="0.0.0.0", port=10000)
