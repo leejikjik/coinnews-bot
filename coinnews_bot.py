@@ -1,158 +1,138 @@
-# coinnews_bot.py
-
 import os
+import threading
 import logging
-import asyncio
-import httpx
 import feedparser
+import asyncio
 from flask import Flask
+from apscheduler.schedulers.background import BackgroundScheduler
+from pytz import timezone
+from datetime import datetime
+from deep_translator import GoogleTranslator
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from apscheduler.schedulers.background import BackgroundScheduler
-from deep_translator import GoogleTranslator
-from datetime import datetime, timedelta
-import pytz
+import httpx
 
-# 환경변수에서 토큰과 채팅 ID 읽기 (Render 환경 변수 UI 사용)
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# 환경변수
+BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-# 주요 코인 목록
-TRACK_COINS = ["bitcoin", "ethereum", "ripple", "solana", "dogecoin"]
-COIN_SYMBOLS = {
-    "bitcoin": "BTC",
-    "ethereum": "ETH",
-    "ripple": "XRP",
-    "solana": "SOL",
-    "dogecoin": "DOGE"
-}
+# 로깅 설정
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
+# 시간대 설정
+KST = timezone("Asia/Seoul")
+
+# Flask 앱
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
-# 가격 저장용 딕셔너리
-previous_prices = {}
+# 전역 application 변수
+application = None
 
-# 번역기 초기화
-translator = GoogleTranslator(source="auto", target="ko")
-
-# 텔레그램 봇 Application 객체 생성
-bot = ApplicationBuilder().token(BOT_TOKEN).build()
-
-# /start 명령어 핸들러
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ 코인 뉴스/시세 알리미 봇입니다.\n/news 또는 /price 명령어를 사용해보세요.")
-
-# /news 명령어 핸들러
-async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    feed_url = "https://cointelegraph.com/rss"
-    parsed_feed = feedparser.parse(feed_url)
-    messages = []
-
-    for entry in parsed_feed.entries[:5][::-1]:  # 오래된 뉴스부터 5개
-        title = translator.translate(entry.title)
-        link = entry.link
-        published = datetime(*entry.published_parsed[:6]).astimezone(pytz.timezone("Asia/Seoul")).strftime('%Y-%m-%d %H:%M')
-        messages.append(f"📰 <b>{title}</b>\n🕒 {published}\n🔗 {link}")
-
-    for msg in messages:
-        await update.message.reply_html(msg)
-
-# /price 명령어 핸들러
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await get_price_message()
-    if msg:
-        await update.message.reply_text(msg)
-    else:
-        await update.message.reply_text("❌ 시세 정보를 불러오지 못했습니다.")
-
-# 시세 메시지 생성 함수
-async def get_price_message():
+# 뉴스 수집 함수
+def fetch_and_send_news():
     try:
-        url = "https://api.binance.com/api/v3/ticker/price"
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, timeout=10)
-            data = response.json()
-        
-        price_map = {item["symbol"]: float(item["price"]) for item in data}
-        msg = "📈 코인 시세 (1분 변화 기준)\n"
+        feed_url = "https://cointelegraph.com/rss"
+        feed = feedparser.parse(feed_url)
+        news_items = []
 
-        for coin in TRACK_COINS:
-            symbol = COIN_SYMBOLS[coin].upper()
-            pair = symbol + "USDT"
-            current_price = price_map.get(pair)
+        for entry in feed.entries[:5][::-1]:  # 오래된 순
+            translated_title = GoogleTranslator(source="auto", target="ko").translate(entry.title)
+            translated_summary = GoogleTranslator(source="auto", target="ko").translate(entry.summary)
+            news_items.append(f"📰 <b>{translated_title}</b>\n{translated_summary}\n<a href='{entry.link}'>원문 보기</a>\n")
 
-            if not current_price:
-                continue
+        message = "\n\n".join(news_items)
 
-            previous = previous_prices.get(symbol)
-            diff = ""
-            if previous:
-                change = current_price - previous
-                percent = (change / previous) * 100 if previous != 0 else 0
-                emoji = "🔺" if change > 0 else ("🔻" if change < 0 else "➖")
-                diff = f"{emoji} {change:+.2f} ({percent:+.2f}%)"
-            else:
-                diff = "🔄 변화 정보 없음"
-
-            msg += f"\n{symbol}: ${current_price:.2f}  {diff}"
-            previous_prices[symbol] = current_price
-
-        return msg
-
+        asyncio.run(application.bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML", disable_web_page_preview=True))
+        print("[뉴스] 전송 완료")
     except Exception as e:
-        logging.error(f"가격 불러오기 오류: {e}")
-        return None
+        print("[뉴스 오류]", e)
 
-# 자동 뉴스 전송 함수
-async def send_auto_news():
-    feed_url = "https://cointelegraph.com/rss"
-    parsed_feed = feedparser.parse(feed_url)
+# 시세 수집 함수
+async def fetch_and_send_prices():
+    try:
+        coins = ["bitcoin", "ethereum", "ripple", "solana", "dogecoin"]
+        symbols = {"bitcoin": "BTC", "ethereum": "ETH", "ripple": "XRP", "solana": "SOL", "dogecoin": "DOGE"}
 
-    messages = []
-    for entry in parsed_feed.entries[:3][::-1]:  # 최근 3개 뉴스
-        title = translator.translate(entry.title)
-        link = entry.link
-        published = datetime(*entry.published_parsed[:6]).astimezone(pytz.timezone("Asia/Seoul")).strftime('%Y-%m-%d %H:%M')
-        messages.append(f"📰 <b>{title}</b>\n🕒 {published}\n🔗 {link}")
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(coins)}&vs_currencies=usd"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+        data = response.json()
 
-    for msg in messages:
-        await bot.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="HTML")
+        msg = f"📊 실시간 코인 시세 (USD 기준)\n🕒 {datetime.now(KST).strftime('%H:%M:%S')}\n\n"
+        for coin in coins:
+            price = data.get(coin, {}).get("usd")
+            if price:
+                msg += f"{symbols[coin]}: ${price:.2f}\n"
 
-# 자동 시세 전송 함수
-async def send_auto_price():
-    msg = await get_price_message()
-    if msg:
-        await bot.bot.send_message(chat_id=CHAT_ID, text=msg)
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg)
+        print("[시세] 전송 완료")
+    except Exception as e:
+        print("[시세 오류]", e)
 
 # 스케줄러 설정
 def start_scheduler():
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(lambda: asyncio.run(send_auto_news()), "interval", minutes=10)
-    scheduler.add_job(lambda: asyncio.run(send_auto_price()), "interval", minutes=1)
+    scheduler = BackgroundScheduler(timezone=KST)
+    scheduler.add_job(fetch_and_send_news, "interval", minutes=30)
+    scheduler.add_job(lambda: asyncio.run(fetch_and_send_prices()), "interval", minutes=5)
     scheduler.start()
-    logging.info("✅ 스케줄러 시작됨")
 
-# Flask 루트 페이지
+# Telegram 명령어
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("✅ 코인 뉴스/시세 봇입니다. /news 또는 /price 를 입력해보세요.")
+
+async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        feed_url = "https://cointelegraph.com/rss"
+        feed = feedparser.parse(feed_url)
+        news_items = []
+
+        for entry in feed.entries[:5][::-1]:  # 오래된 순
+            translated_title = GoogleTranslator(source="auto", target="ko").translate(entry.title)
+            translated_summary = GoogleTranslator(source="auto", target="ko").translate(entry.summary)
+            news_items.append(f"📰 <b>{translated_title}</b>\n{translated_summary}\n<a href='{entry.link}'>원문 보기</a>\n")
+
+        message = "\n\n".join(news_items)
+        await update.message.reply_text(message, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as e:
+        await update.message.reply_text("❌ 뉴스 로딩 실패")
+
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        coins = ["bitcoin", "ethereum", "ripple", "solana", "dogecoin"]
+        symbols = {"bitcoin": "BTC", "ethereum": "ETH", "ripple": "XRP", "solana": "SOL", "dogecoin": "DOGE"}
+
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(coins)}&vs_currencies=usd"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+        data = response.json()
+
+        msg = f"📊 실시간 코인 시세 (USD 기준)\n🕒 {datetime.now(KST).strftime('%H:%M:%S')}\n\n"
+        for coin in coins:
+            price = data.get(coin, {}).get("usd")
+            if price:
+                msg += f"{symbols[coin]}: ${price:.2f}\n"
+
+        await update.message.reply_text(msg)
+    except Exception as e:
+        await update.message.reply_text("❌ 시세 조회 실패")
+
+# Telegram 봇 스레드
+def telegram_bot_thread():
+    global application
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("news", news))
+    application.add_handler(CommandHandler("price", price))
+    application.run_polling()
+
+# Flask 실행
 @app.route("/")
 def home():
-    return "✅ Telegram Coin News Bot is running."
-
-# 봇 명령어 핸들러 등록
-bot.add_handler(CommandHandler("start", start))
-bot.add_handler(CommandHandler("news", news))
-bot.add_handler(CommandHandler("price", price))
+    return "CoinNews Bot is running."
 
 # 메인 실행
 if __name__ == "__main__":
-    import threading
-
-    def flask_thread():
-        app.run(host="0.0.0.0", port=10000)
-
-    def bot_thread():
-        start_scheduler()
-        bot.run_polling()
-
-    threading.Thread(target=flask_thread).start()
-    threading.Thread(target=bot_thread).start()
+    # Flask 및 Telegram 병렬 실행
+    threading.Thread(target=telegram_bot_thread).start()
+    threading.Thread(target=start_scheduler).start()
+    app.run(host="0.0.0.0", port=10000)
