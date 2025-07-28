@@ -20,21 +20,21 @@ PORT = int(os.environ.get("PORT", 10000))
 if not BOT_TOKEN or not CHAT_ID:
     raise RuntimeError("환경변수 TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID 가 필요합니다.")
 
-# 로거
+# 로깅
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Flask
+# Flask 서버
 app = Flask(__name__)
 
 @app.route("/")
 def index():
     return "✅ Coin Bot is running."
 
-# 가격 저장소
+# 이전 가격 저장
 previous_prices = {}
 
-# 뉴스 전송 함수
+# Cointelegraph 뉴스 전송
 async def send_auto_news(bot: Bot):
     try:
         feed = feedparser.parse("https://cointelegraph.com/rss")
@@ -56,13 +56,16 @@ async def send_auto_news(bot: Bot):
     except Exception as e:
         logger.error(f"[뉴스 오류] {e}")
 
-# CoinGecko 시세 전송 함수
+# CoinGecko 시세 전송 (403 해결 버전)
 async def send_auto_price(bot: Bot):
     try:
         url = "https://api.coingecko.com/api/v3/simple/price"
         params = {
             "ids": "bitcoin,ethereum,ripple,solana,dogecoin",
             "vs_currencies": "usd"
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; CoinNewsBot/1.0; +https://cointelegraph.com)"
         }
         names = {
             "bitcoin": "비트코인",
@@ -73,7 +76,7 @@ async def send_auto_price(bot: Bot):
         }
 
         async with httpx.AsyncClient() as client:
-            resp = await client.get(url, params=params)
+            resp = await client.get(url, params=params, headers=headers)
             resp.raise_for_status()
             data = resp.json()
 
@@ -101,7 +104,7 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_auto_price(context.bot)
 
-# 스케줄러
+# 스케줄러 시작
 def start_scheduler(bot: Bot):
     loop = asyncio.get_event_loop()
     scheduler = BackgroundScheduler()
@@ -110,23 +113,19 @@ def start_scheduler(bot: Bot):
     scheduler.start()
     logger.info("✅ 스케줄러 시작됨")
 
-# Flask 서버 실행
+# Flask 실행
 def run_flask():
     app.run(host="0.0.0.0", port=PORT)
 
 # 메인 실행
 if __name__ == "__main__":
-    # Flask 별도 실행
     threading.Thread(target=run_flask).start()
 
-    # Telegram Bot 실행
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("news", news))
     application.add_handler(CommandHandler("price", price))
 
-    # 스케줄러 시작
     start_scheduler(application.bot)
 
-    # 봇 실행
     application.run_polling()
