@@ -1,5 +1,3 @@
-# coinnews_bot.py
-
 import os
 import asyncio
 import logging
@@ -74,19 +72,26 @@ async def fetch_price():
             "vs_currencies": "usd",
         }
         headers = {"User-Agent": "Mozilla/5.0"}
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, params=params, headers=headers)
+            if resp.status_code != 200:
+                logger.error(f"[시세 오류] 상태코드 {resp.status_code} - {resp.text}")
+                return f"❌ 시세 API 오류: {resp.status_code}"
             data = resp.json()
 
         result = []
         for name in ["bitcoin", "ethereum", "ripple", "solana", "dogecoin"]:
-            price = data[name]["usd"]
-            symbol = name.upper()
-            result.append(f"{symbol}: ${price:,.2f}")
+            if name in data:
+                price = data[name]["usd"]
+                symbol = name.upper()
+                result.append(f"{symbol}: ${price:,.2f}")
+            else:
+                result.append(f"{name.upper()}: 데이터 없음")
         now = datetime.now(KST).strftime('%H:%M:%S')
         return f"📊 {now} 기준 시세:\n" + "\n".join(result)
+
     except Exception as e:
-        logger.error(f"[시세 오류] {e}")
+        logger.error(f"[시세 예외] {e}")
         return "❌ 시세 불러오기 실패"
 
 # 자동 전송
