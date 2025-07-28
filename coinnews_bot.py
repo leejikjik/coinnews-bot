@@ -56,35 +56,38 @@ async def send_auto_news(bot: Bot):
     except Exception as e:
         logger.error(f"[뉴스 오류] {e}")
 
-# 시세 전송 함수
+# CoinGecko 시세 전송 함수
 async def send_auto_price(bot: Bot):
     try:
-        url = "https://api.binance.com/api/v3/ticker/price"
-        coins = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "DOGEUSDT"]
+        url = "https://api.coingecko.com/api/v3/simple/price"
+        params = {
+            "ids": "bitcoin,ethereum,ripple,solana,dogecoin",
+            "vs_currencies": "usd"
+        }
         names = {
-            "BTCUSDT": "비트코인", "ETHUSDT": "이더리움", "XRPUSDT": "리플",
-            "SOLUSDT": "솔라나", "DOGEUSDT": "도지코인"
+            "bitcoin": "비트코인",
+            "ethereum": "이더리움",
+            "ripple": "리플",
+            "solana": "솔라나",
+            "dogecoin": "도지코인"
         }
 
         async with httpx.AsyncClient() as client:
-            resp = await client.get(url)
+            resp = await client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()
 
         now = datetime.now(timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
         lines = [f"📊 {now} 기준 시세:\n"]
 
-        for coin in coins:
-            price = float(next((i["price"] for i in data if i["symbol"] == coin), 0))
-            diff = price - previous_prices.get(coin, price)
+        for key, name in names.items():
+            price = float(data[key]["usd"])
+            diff = price - previous_prices.get(key, price)
             emoji = "🔺" if diff > 0 else "🔻" if diff < 0 else "➖"
-            lines.append(f"{names[coin]}: {price:.2f} USD {emoji} ({diff:+.2f})")
-            previous_prices[coin] = price
+            lines.append(f"{name}: {price:.2f} USD {emoji} ({diff:+.2f})")
+            previous_prices[key] = price
 
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text="\n".join(lines)
-        )
+        await bot.send_message(chat_id=CHAT_ID, text="\n".join(lines))
     except Exception as e:
         logger.error(f"[시세 오류] {e}")
 
