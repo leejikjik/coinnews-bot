@@ -65,7 +65,7 @@ async def fetch_news():
         logger.error(f"[뉴스 오류] {e}")
         return "❌ 뉴스 불러오기 실패"
 
-# 시세 파싱 (403 우회 헤더 적용)
+# 시세 파싱
 async def fetch_price():
     try:
         url = "https://api.coingecko.com/api/v3/simple/price"
@@ -96,7 +96,7 @@ async def fetch_price():
                 result.append(f"{name.upper()}: ❌ 정보 없음")
 
         now = datetime.now(KST).strftime('%H:%M:%S')
-        return f"📊 {now} 기준 시세:\n" + "\n.join(result)
+        return f"📊 {now} 기준 시세:\n" + "\n".join(result)
 
     except Exception as e:
         logger.error(f"[시세 오류] {e}")
