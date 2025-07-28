@@ -1,90 +1,111 @@
 import os
-import threading
 import logging
-import asyncio
+import threading
+import feedparser
+import httpx
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-)
-import httpx
-from dotenv import load_dotenv
+from deep_translator import GoogleTranslator
+from datetime import datetime
+from pytz import timezone
+from telegram import Update, Bot
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-load_dotenv()
+# 환경 변수
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# 환경변수
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# 로거
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# 텔레그램 핸들러
+# Flask
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    return "✅ Coin Bot is running."
+
+# 자동 뉴스 전송
+async def send_auto_news(bot: Bot):
+    try:
+        rss_url = "https://cointelegraph.com/rss"
+        feed = feedparser.parse(rss_url)
+        entries = sorted(feed.entries, key=lambda x: x.published_parsed)[-5:]
+
+        messages = []
+        for entry in entries:
+            title = entry.title
+            link = entry.link
+            translated = GoogleTranslator(source='auto', target='ko').translate(title)
+            messages.append(f"📰 <b>{translated}</b>\n<a href='{link}'>원문 보기</a>")
+
+        await bot.send_message(chat_id=CHAT_ID, text="\n\n".join(messages), parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as e:
+        logger.error(f"[뉴스 오류] {e}")
+
+# 자동 시세 전송
+previous_prices = {}
+
+async def send_auto_price(bot: Bot):
+    try:
+        url = "https://api.binance.com/api/v3/ticker/price"
+        coins = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "DOGEUSDT"]
+        names = {
+            "BTCUSDT": "비트코인", "ETHUSDT": "이더리움", "XRPUSDT": "리플",
+            "SOLUSDT": "솔라나", "DOGEUSDT": "도지코인"
+        }
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url)
+            data = resp.json()
+
+        now = datetime.now(timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
+        lines = [f"📊 {now} 기준 시세:\n"]
+
+        for coin in coins:
+            price = float(next((i["price"] for i in data if i["symbol"] == coin), 0))
+            diff = price - previous_prices.get(coin, price)
+            emoji = "🔺" if diff > 0 else "🔻" if diff < 0 else "➖"
+            lines.append(f"{names[coin]}: {price:.2f} USD {emoji} ({diff:+.2f})")
+            previous_prices[coin] = price
+
+        await bot.send_message(chat_id=CHAT_ID, text="\n".join(lines))
+    except Exception as e:
+        logger.error(f"[시세 오류] {e}")
+
+# 명령어 핸들러
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ 코인 뉴스봇 작동 중입니다!")
+    await update.message.reply_text("🤖 코인 뉴스 & 시세 알림 봇입니다!\n/news 또는 /price 입력해보세요.")
+
+async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_auto_news(context.bot)
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get("https://api.binance.com/api/v3/ticker/price")
-            data = response.json()
-            coins = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'SOLUSDT', 'DOGEUSDT']
-            result = []
-            for coin in coins:
-                price = next((item['price'] for item in data if item['symbol'] == coin), None)
-                if price:
-                    result.append(f"{coin.replace('USDT', '')}: ${float(price):,.2f}")
-            message = "📈 현재 코인 시세:\n" + "\n".join(result)
-            await update.message.reply_text(message)
-    except Exception as e:
-        logging.error(f"가격 조회 실패: {e}")
-        await update.message.reply_text("❌ 시세 조회 실패")
+    await send_auto_price(context.bot)
 
-# 텔레그램 봇 초기화
-application = ApplicationBuilder().token(TOKEN).build()
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("price", price))
-
-# Flask 서버
-flask_app = Flask(__name__)
-
-@flask_app.route("/")
-def home():
-    return "Bot is alive!"
-
-# 가격 자동 전송 함수
-def send_auto_price():
-    asyncio.run(_send_price_message())
-
-async def _send_price_message():
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get("https://api.binance.com/api/v3/ticker/price")
-            data = response.json()
-            coins = ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'SOLUSDT', 'DOGEUSDT']
-            result = []
-            for coin in coins:
-                price = next((item['price'] for item in data if item['symbol'] == coin), None)
-                if price:
-                    result.append(f"{coin.replace('USDT', '')}: ${float(price):,.2f}")
-            message = "📢 자동 시세 알림\n" + "\n".join(result)
-            await application.bot.send_message(chat_id=CHAT_ID, text=message)
-    except Exception as e:
-        logging.error(f"시세 전송 오류: {e}")
-
-# APScheduler 실행
-def start_scheduler():
-    scheduler = BackgroundScheduler(timezone="Asia/Seoul")
-    scheduler.add_job(send_auto_price, 'interval', minutes=1)
+# 스케줄러 시작
+def start_scheduler(bot: Bot):
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(lambda: asyncio.run(send_auto_news(bot)), "interval", hours=1)
+    scheduler.add_job(lambda: asyncio.run(send_auto_price(bot)), "interval", minutes=1)
     scheduler.start()
-    logging.info("🔁 Scheduler started")
+    logger.info("✅ 스케줄러 시작됨")
 
-# Flask를 서브 스레드로 실행
+# Flask 쓰레드로 실행
 def run_flask():
-    flask_app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=10000)
 
+# 메인 실행
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    # Flask 따로 실행
     threading.Thread(target=run_flask).start()
-    start_scheduler()
-    application.run_polling()  # 반드시 메인스레드에서 실행
+
+    # Telegram Bot 실행
+    app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("news", news))
+    app_bot.add_handler(CommandHandler("price", price))
+
+    start_scheduler(app_bot.bot)  # bot 인스턴스 전달
+    app_bot.run_polling()
