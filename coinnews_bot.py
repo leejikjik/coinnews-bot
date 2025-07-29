@@ -18,11 +18,12 @@ from telegram.ext import (
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# 환경설정
+# 환경변수
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 PORT = int(os.environ.get("PORT", 10000))
 
+# 기본 설정
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 KST = timezone("Asia/Seoul")
 app = Flask(__name__)
@@ -36,11 +37,10 @@ coins = {
 }
 previous_prices = {}
 
-# /start
+# 명령어 핸들러
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🟢 봇 작동 중\n/news : 뉴스\n/price : 시세")
 
-# /news
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         feed = feedparser.parse("https://cointelegraph.com/rss")
@@ -54,12 +54,11 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await update.message.reply_text("❌ 뉴스 로딩 실패")
 
-# /price
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = await fetch_price_message()
     await update.message.reply_text(message)
 
-# 시세 메시지 생성
+# 시세 메시지
 async def fetch_price_message():
     try:
         async with httpx.AsyncClient() as client:
@@ -82,30 +81,30 @@ async def fetch_price_message():
     except:
         return "❌ 시세 정보를 가져올 수 없습니다."
 
-# 자동 뉴스 전송
-async def send_auto_news(app):
+# 자동 전송 코루틴
+async def send_auto_news(application):
     try:
         feed = feedparser.parse("https://cointelegraph.com/rss")
         entry = feed.entries[0]
         translated = GoogleTranslator(source='auto', target='ko').translate(entry.title)
         published = datetime(*entry.published_parsed[:6]).astimezone(KST).strftime("%Y-%m-%d %H:%M")
         msg = f"🗞 {translated}\n🕒 {published}\n🔗 {entry.link}"
-        await app.bot.send_message(chat_id=CHAT_ID, text=msg)
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg)
     except:
         pass
 
-# 자동 시세 전송
-async def send_auto_price(app):
+async def send_auto_price(application):
     try:
         message = await fetch_price_message()
-        await app.bot.send_message(chat_id=CHAT_ID, text=message)
+        await application.bot.send_message(chat_id=CHAT_ID, text=message)
     except:
         pass
 
-# 스케줄러
-def start_scheduler(app, loop):
-    scheduler.add_job(lambda: asyncio.run_coroutine_threadsafe(send_auto_news(app), loop), 'interval', minutes=30)
-    scheduler.add_job(lambda: asyncio.run_coroutine_threadsafe(send_auto_price(app), loop), 'interval', minutes=1)
+# APScheduler
+def start_scheduler(application):
+    loop = asyncio.get_event_loop()
+    scheduler.add_job(lambda: asyncio.run_coroutine_threadsafe(send_auto_news(application), loop), 'interval', minutes=30)
+    scheduler.add_job(lambda: asyncio.run_coroutine_threadsafe(send_auto_price(application), loop), 'interval', minutes=1)
     scheduler.start()
     logging.info("✅ 스케줄러 작동 시작")
 
@@ -117,18 +116,16 @@ def home():
 def run_flask():
     app.run(host="0.0.0.0", port=PORT)
 
-# 메인 실행
+# run_polling()은 메인에서 직접 실행
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    application = ApplicationBuilder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("news", news))
+    application.add_handler(CommandHandler("price", price))
 
-    async def main():
-        app_bot = ApplicationBuilder().token(TOKEN).build()
-        app_bot.add_handler(CommandHandler("start", start))
-        app_bot.add_handler(CommandHandler("news", news))
-        app_bot.add_handler(CommandHandler("price", price))
-        start_scheduler(app_bot, loop)
-        await app_bot.run_polling()
-
+    # 백그라운드로 Flask + Scheduler 실행
     Thread(target=run_flask).start()
-    loop.run_until_complete(main())
+    Thread(target=start_scheduler, args=(application,), daemon=True).start()
+
+    # 메인 스레드에서 polling 실행
+    application.run_polling()
