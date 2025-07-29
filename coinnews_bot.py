@@ -14,7 +14,6 @@ from telegram.ext import (
     ContextTypes,
 )
 import threading
-import asyncio
 
 # 환경변수
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -27,7 +26,7 @@ logger = logging.getLogger(__name__)
 # 시간대
 KST = timezone("Asia/Seoul")
 
-# Flask
+# Flask 앱
 app = Flask(__name__)
 
 # 코인 목록 (CoinPaprika 기준 ID)
@@ -59,43 +58,29 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"/news 오류: {e}")
         await update.message.reply_text("❌ 뉴스 가져오기 실패")
 
-# CoinPaprika 가격 조회
-async def get_coinpaprika_prices():
-    result = {}
-    try:
-        async with httpx.AsyncClient() as client:
-            for coin_id in coins.keys():
-                url = f"https://api.coinpaprika.com/v1/tickers/{coin_id}"
-                r = await client.get(url, timeout=10)
-                data = r.json()
-                price = data["quotes"]["USD"]["price"]
-                result[coin_id] = price
-        return result
-    except Exception as e:
-        logger.error(f"CoinPaprika 가격 조회 실패: {e}")
-        return {}
-
 # /price
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-        price_data = await get_coinpaprika_prices()
-        result = [f"📊 코인 시세 ({now})"]
-        for coin_id, name in coins.items():
-            price = price_data.get(coin_id)
-            if price is not None:
-                prev = previous_prices.get(coin_id)
-                diff = price - prev if prev else 0
-                sign = "🔺" if diff > 0 else "🔻" if diff < 0 else "➖"
-                change = f"{sign} {abs(diff):,.4f}" if prev else "➖ 변화 없음"
-                result.append(f"{name}: {price:,.2f} USD ({change})")
-                previous_prices[coin_id] = price
-        await update.message.reply_text("\n".join(result))
+        async with httpx.AsyncClient() as client:
+            result = [f"📊 코인 시세 ({now})"]
+            for coin_id, name in coins.items():
+                r = await client.get(f"https://api.coinpaprika.com/v1/tickers/{coin_id}")
+                if r.status_code == 200:
+                    data = r.json()
+                    price = float(data["quotes"]["USD"]["price"])
+                    prev = previous_prices.get(coin_id)
+                    diff = price - prev if prev else 0
+                    sign = "🔺" if diff > 0 else "🔻" if diff < 0 else "➖"
+                    change = f"{sign} {abs(diff):,.4f}" if prev else "➖ 변화 없음"
+                    result.append(f"{name}: {price:,.2f} USD ({change})")
+                    previous_prices[coin_id] = price
+            await update.message.reply_text("\n".join(result))
     except Exception as e:
         logger.error(f"/price 오류: {e}")
         await update.message.reply_text("❌ 시세 가져오기 실패")
 
-# 자동 뉴스
+# 자동 뉴스 전송
 async def send_auto_news(application):
     try:
         feed = feedparser.parse("https://cointelegraph.com/rss")
@@ -107,22 +92,24 @@ async def send_auto_news(application):
     except Exception as e:
         logger.error(f"자동 뉴스 오류: {e}")
 
-# 자동 시세
+# 자동 시세 전송
 async def send_auto_price(application):
     try:
         now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-        price_data = await get_coinpaprika_prices()
-        result = [f"📊 자동 코인 시세 ({now})"]
-        for coin_id, name in coins.items():
-            price = price_data.get(coin_id)
-            if price is not None:
-                prev = previous_prices.get(coin_id)
-                diff = price - prev if prev else 0
-                sign = "🔺" if diff > 0 else "🔻" if diff < 0 else "➖"
-                change = f"{sign} {abs(diff):,.4f}" if prev else "➖ 변화 없음"
-                result.append(f"{name}: {price:,.2f} USD ({change})")
-                previous_prices[coin_id] = price
-        await application.bot.send_message(chat_id=CHAT_ID, text="\n".join(result))
+        async with httpx.AsyncClient() as client:
+            result = [f"📊 자동 코인 시세 ({now})"]
+            for coin_id, name in coins.items():
+                r = await client.get(f"https://api.coinpaprika.com/v1/tickers/{coin_id}")
+                if r.status_code == 200:
+                    data = r.json()
+                    price = float(data["quotes"]["USD"]["price"])
+                    prev = previous_prices.get(coin_id)
+                    diff = price - prev if prev else 0
+                    sign = "🔺" if diff > 0 else "🔻" if diff < 0 else "➖"
+                    change = f"{sign} {abs(diff):,.4f}" if prev else "➖ 변화 없음"
+                    result.append(f"{name}: {price:,.2f} USD ({change})")
+                    previous_prices[coin_id] = price
+            await application.bot.send_message(chat_id=CHAT_ID, text="\n".join(result))
     except Exception as e:
         logger.error(f"자동 시세 오류: {e}")
 
@@ -134,26 +121,22 @@ def home():
 # 스케줄러 시작
 def start_scheduler(application):
     scheduler = BackgroundScheduler()
-    scheduler.add_job(lambda: asyncio.create_task(send_auto_news(application)), "interval", minutes=30)
-    scheduler.add_job(lambda: asyncio.create_task(send_auto_price(application)), "interval", minutes=1)
+    scheduler.add_job(lambda: application.create_task(send_auto_news(application)), "interval", minutes=30)
+    scheduler.add_job(lambda: application.create_task(send_auto_price(application)), "interval", minutes=1)
     scheduler.start()
     logger.info("✅ 스케줄러 작동 시작")
 
-# Telegram 봇 실행 함수
-async def start_bot():
-    app_bot = ApplicationBuilder().token(TOKEN).build()
-    app_bot.add_handler(CommandHandler("start", start))
-    app_bot.add_handler(CommandHandler("news", news))
-    app_bot.add_handler(CommandHandler("price", price))
-    start_scheduler(app_bot)
-    await app_bot.run_polling()
-
-# 병렬 실행: Telegram Bot + Flask
-def run_all():
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_bot())
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000)).start()
-    loop.run_forever()
-
+# 메인 실행
 if __name__ == "__main__":
-    run_all()
+    def start_flask():
+        app.run(host="0.0.0.0", port=10000)
+
+    threading.Thread(target=start_flask).start()
+
+    application = ApplicationBuilder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("news", news))
+    application.add_handler(CommandHandler("price", price))
+    start_scheduler(application)
+
+    application.run_polling()
