@@ -1,7 +1,10 @@
 import os
 import logging
+import httpx
+import feedparser
 from flask import Flask
-from threading import Thread
+from datetime import datetime, timedelta
+from deep_translator import GoogleTranslator
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -9,117 +12,131 @@ from telegram.ext import (
     ContextTypes,
 )
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
-import feedparser
-from deep_translator import GoogleTranslator
-import httpx
+import threading
+import asyncio
 
-# 환경변수
+# ───── 환경 변수 ─────
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# 로그
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ───── Flask ─────
+app = Flask(__name__)
 
-# Flask
-flask_app = Flask(__name__)
-
-@flask_app.route("/")
+@app.route("/")
 def index():
-    return "✅ Flask 서버 작동 중"
+    return "✅ Coin News Bot Running"
 
-# /start
+# ───── Logger ─────
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+
+# ───── CoinGecko 시세 저장 ─────
+latest_prices = {}
+
+# ───── /start ─────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🟢 봇 작동 중입니다.\n/news : 최신 뉴스\n/price : 현재 시세")
+    await update.message.reply_text("🟢 봇 작동 중입니다.\n/news : 뉴스\n/price : 시세 확인")
 
-# /news
+# ───── /news ─────
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        feed = feedparser.parse("https://cointelegraph.com/rss")
-        messages = []
-        for entry in reversed(feed.entries[:5]):
-            title = GoogleTranslator(source="auto", target="ko").translate(entry.title)
-            messages.append(f"📰 <b>{title}</b>\n{entry.link}")
-        await update.message.reply_text("\n\n".join(messages), parse_mode="HTML")
-    except Exception as e:
-        await update.message.reply_text(f"[뉴스 오류] {e}")
+    feed = feedparser.parse("https://cointelegraph.com/rss")
+    messages = []
+    for entry in feed.entries[:5][::-1]:  # 오래된 순으로
+        translated = GoogleTranslator(source='auto', target='ko').translate(entry.title)
+        time_str = datetime(*entry.published_parsed[:6]).strftime('%m/%d %H:%M')
+        messages.append(f"🗞 [{time_str}] {translated}\n{entry.link}")
+    await update.message.reply_text("\n\n".join(messages))
 
-# /price
+# ───── /price ─────
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global latest_prices
     try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get("https://api.binance.com/api/v3/ticker/price")
-            data = res.json()
-            coins = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "DOGEUSDT"]
-            msg = ""
-            for symbol in coins:
-                item = next((x for x in data if x["symbol"] == symbol), None)
-                if item:
-                    name = symbol.replace("USDT", "")
-                    price = float(item["price"])
-                    msg += f"• {name}: ${price:,.2f}\n"
-            await update.message.reply_text(f"💰 현재 시세\n{msg}")
+        message = await get_price_change_message()
+        await update.message.reply_text(message)
     except Exception as e:
-        await update.message.reply_text(f"[시세 오류] {e}")
+        logging.error(f"/price error: {e}")
+        await update.message.reply_text("⚠️ 시세 정보를 불러오지 못했습니다.")
 
-# 자동 뉴스 전송
+# ───── 가격 추적 함수 ─────
+async def get_price_change_message():
+    global latest_prices
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    symbols = ["bitcoin", "ethereum", "ripple", "solana", "dogecoin"]
+    params = {
+        "ids": ",".join(symbols),
+        "vs_currencies": "usd"
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, params=params)
+        if response.status_code != 200:
+            raise Exception("CoinGecko API 호출 실패")
+
+        data = response.json()
+
+    now = datetime.now().strftime('%H:%M:%S')
+    lines = [f"💰 [코인 시세] {now} 기준\n"]
+    for key in symbols:
+        symbol = key.capitalize()
+        price = data.get(key, {}).get("usd", None)
+        if price is None:
+            continue
+
+        prev = latest_prices.get(key)
+        change = f" (변동 없음)"
+        if prev:
+            diff = price - prev
+            rate = (diff / prev) * 100 if prev != 0 else 0
+            arrow = "🔺" if diff > 0 else "🔻" if diff < 0 else "➖"
+            change = f" {arrow} {abs(diff):.2f} USD ({rate:.2f}%)"
+        lines.append(f"{symbol}: ${price:.2f}{change}")
+
+        latest_prices[key] = price
+
+    return "\n".join(lines)
+
+# ───── 뉴스/시세 자동 전송 ─────
 async def send_auto_news(app):
     try:
         feed = feedparser.parse("https://cointelegraph.com/rss")
         messages = []
-        for entry in reversed(feed.entries[:3]):
-            title = GoogleTranslator(source="auto", target="ko").translate(entry.title)
-            messages.append(f"📰 <b>{title}</b>\n{entry.link}")
-        if messages:
-            await app.bot.send_message(chat_id=CHAT_ID, text="\n\n".join(messages), parse_mode="HTML")
+        for entry in feed.entries[:3][::-1]:
+            translated = GoogleTranslator(source='auto', target='ko').translate(entry.title)
+            time_str = datetime(*entry.published_parsed[:6]).strftime('%m/%d %H:%M')
+            messages.append(f"🗞 [{time_str}] {translated}\n{entry.link}")
+        await app.bot.send_message(chat_id=CHAT_ID, text="\n\n".join(messages))
     except Exception as e:
-        logger.error(f"[자동 뉴스 오류] {e}")
+        logging.error(f"자동 뉴스 에러: {e}")
 
-# 자동 시세 전송
 async def send_auto_price(app):
     try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get("https://api.binance.com/api/v3/ticker/price")
-            data = res.json()
-            coins = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "DOGEUSDT"]
-            msg = ""
-            for symbol in coins:
-                item = next((x for x in data if x["symbol"] == symbol), None)
-                if item:
-                    name = symbol.replace("USDT", "")
-                    price = float(item["price"])
-                    msg += f"• {name}: ${price:,.2f}\n"
-            if msg:
-                await app.bot.send_message(chat_id=CHAT_ID, text=f"💰 실시간 시세\n{msg}")
+        message = await get_price_change_message()
+        await app.bot.send_message(chat_id=CHAT_ID, text=message)
     except Exception as e:
-        logger.error(f"[자동 시세 오류] {e}")
+        logging.error(f"자동 시세 에러: {e}")
 
-# APScheduler
+# ───── 스케줄러 설정 ─────
 def start_scheduler(app):
     scheduler = BackgroundScheduler()
-    scheduler.add_job(lambda: app.create_task(send_auto_news(app)), "interval", minutes=30)
-    scheduler.add_job(lambda: app.create_task(send_auto_price(app)), "interval", minutes=1)
+    scheduler.add_job(lambda: asyncio.run(send_auto_news(app)), 'interval', minutes=30)
+    scheduler.add_job(lambda: asyncio.run(send_auto_price(app)), 'interval', minutes=1)
     scheduler.start()
-    logger.info("✅ 스케줄러 실행됨")
+    logging.info("✅ 스케줄러 실행됨")
 
-# Flask 실행 (백그라운드)
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=10000)
+# ───── 텔레그램 봇 실행 ─────
+def run_bot():
+    app_bot = ApplicationBuilder().token(TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("news", news))
+    app_bot.add_handler(CommandHandler("price", price))
 
-# 메인 실행
+    # 스케줄러 실행
+    start_scheduler(app_bot)
+
+    app_bot.run_polling()
+
+# ───── 병렬 실행 ─────
 if __name__ == "__main__":
-    application = ApplicationBuilder().token(TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("news", news))
-    application.add_handler(CommandHandler("price", price))
-
-    # Flask 백그라운드로 실행
-    Thread(target=run_flask, daemon=True).start()
-
-    # APScheduler 실행
-    start_scheduler(application)
-
-    # Telegram run_polling 실행 (main thread)
-    application.run_polling()
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000)).start()
+    run_bot()
