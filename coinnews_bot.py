@@ -26,19 +26,17 @@ logger = logging.getLogger(__name__)
 
 # 시간대
 KST = timezone("Asia/Seoul")
-
-# Flask 앱
 app = Flask(__name__)
+previous_prices = {}
 
-# 코인 목록
+# CoinGecko 코인 ID
 coins = {
     "bitcoin": "비트코인",
     "ethereum": "이더리움",
-    "xrp": "리플",
+    "ripple": "리플",
     "solana": "솔라나",
     "dogecoin": "도지코인",
 }
-previous_prices = {}
 
 # /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,21 +61,27 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+        ids = ",".join(coins.keys())
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd"
         async with httpx.AsyncClient() as client:
-            r = await client.get("https://api.coincap.io/v2/assets")
-            data = r.json().get("data", [])
-            result = [f"📊 코인 시세 ({now})"]
-            for coin_id, name in coins.items():
-                coin_data = next((c for c in data if c["id"] == coin_id), None)
-                if coin_data:
-                    price = float(coin_data["priceUsd"])
-                    prev = previous_prices.get(coin_id)
-                    diff = price - prev if prev else 0
-                    sign = "🔺" if diff > 0 else "🔻" if diff < 0 else "➖"
-                    change = f"{sign} {abs(diff):,.4f}" if prev else "➖ 변화 없음"
-                    result.append(f"{name}: {price:,.2f} USD ({change})")
-                    previous_prices[coin_id] = price
-            await update.message.reply_text("\n".join(result))
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.json()
+
+        result = [f"📊 실시간 코인 시세 ({now})"]
+        for coin_id, name in coins.items():
+            if coin_id in data:
+                price = float(data[coin_id]["usd"])
+                prev = previous_prices.get(coin_id)
+                diff = price - prev if prev else 0
+                sign = "🔺" if diff > 0 else "🔻" if diff < 0 else "➖"
+                change = f"{sign} {abs(diff):,.4f}" if prev else "➖ 변화 없음"
+                result.append(f"{name}: {price:,.2f} USD ({change})")
+                previous_prices[coin_id] = price
+            else:
+                result.append(f"{name}: ❌ 데이터 없음")
+        await update.message.reply_text("\n".join(result))
+
     except Exception as e:
         logger.error(f"/price 오류: {e}")
         await update.message.reply_text("❌ 시세 가져오기 실패")
@@ -98,21 +102,27 @@ async def send_auto_news(bot):
 async def send_auto_price(bot):
     try:
         now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+        ids = ",".join(coins.keys())
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd"
         async with httpx.AsyncClient() as client:
-            r = await client.get("https://api.coincap.io/v2/assets")
-            data = r.json().get("data", [])
-            result = [f"📊 자동 코인 시세 ({now})"]
-            for coin_id, name in coins.items():
-                coin_data = next((c for c in data if c["id"] == coin_id), None)
-                if coin_data:
-                    price = float(coin_data["priceUsd"])
-                    prev = previous_prices.get(coin_id)
-                    diff = price - prev if prev else 0
-                    sign = "🔺" if diff > 0 else "🔻" if diff < 0 else "➖"
-                    change = f"{sign} {abs(diff):,.4f}" if prev else "➖ 변화 없음"
-                    result.append(f"{name}: {price:,.2f} USD ({change})")
-                    previous_prices[coin_id] = price
-            await bot.send_message(chat_id=CHAT_ID, text="\n".join(result))
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.json()
+
+        result = [f"📊 자동 코인 시세 ({now})"]
+        for coin_id, name in coins.items():
+            if coin_id in data:
+                price = float(data[coin_id]["usd"])
+                prev = previous_prices.get(coin_id)
+                diff = price - prev if prev else 0
+                sign = "🔺" if diff > 0 else "🔻" if diff < 0 else "➖"
+                change = f"{sign} {abs(diff):,.4f}" if prev else "➖ 변화 없음"
+                result.append(f"{name}: {price:,.2f} USD ({change})")
+                previous_prices[coin_id] = price
+            else:
+                result.append(f"{name}: ❌ 데이터 없음")
+        await bot.send_message(chat_id=CHAT_ID, text="\n".join(result))
+
     except Exception as e:
         logger.error(f"자동 시세 오류: {e}")
 
@@ -143,13 +153,10 @@ def start_bot():
     app_bot.add_handler(CommandHandler("news", news))
     app_bot.add_handler(CommandHandler("price", price))
 
-    # 스케줄러 시작
     start_scheduler(app_bot.bot)
-
-    # run_polling은 메인스레드에서 직접 실행
     app_bot.run_polling()
 
-# 메인 실행
+# 병렬 실행
 if __name__ == "__main__":
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000)).start()
     start_bot()
