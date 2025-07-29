@@ -2,164 +2,168 @@ import os
 import logging
 import asyncio
 from flask import Flask
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
+    ApplicationBuilder, CommandHandler, ContextTypes, CallbackContext
 )
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime, timezone, timedelta
-import feedparser
 from deep_translator import GoogleTranslator
+from datetime import datetime
+import feedparser
 import httpx
 
-# 로깅 설정
+# 기본 설정
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# 환경변수
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+KST = datetime.now().astimezone().tzinfo
 
 app = Flask(__name__)
 scheduler = BackgroundScheduler()
-KST = timezone(timedelta(hours=9))
 
-# 개인채팅에서만 응답 허용
-def is_private(update: Update) -> bool:
-    return update.effective_chat.type == "private"
+# 주요 10종 코인 ID (CoinPaprika 기준)
+MAIN_COINS = [
+    "bitcoin", "ethereum", "ripple", "solana", "dogecoin",
+    "cardano", "polkadot", "tron", "avalanche", "chainlink"
+]
 
-# /start
+async def send_message(bot, text):
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text=text)
+    except Exception as e:
+        logging.error(f"메시지 전송 오류: {e}")
+
+# 1. /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_private(update):
-        await update.message.reply_text("🟢 봇이 작동 중입니다.\n/news : 최신 뉴스\n/price : 실시간 시세")
-    else:
-        await update.message.reply_text("❗ 이 명령어는 봇과 1:1 채팅에서만 사용 가능합니다.")
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("🟢 작동 중\n/price : 코인시세\n/news : 최신뉴스")
 
-# /help
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_private(update):
-        await update.message.reply_text("/news - 최신 뉴스\n/price - 실시간 시세 확인\n/chart - (준비중)")
-    else:
-        await update.message.reply_text("❗ 이 명령어는 봇과 1:1 채팅에서만 사용 가능합니다.")
-
-# /news
+# 2. /news
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_private(update):
-        await update.message.reply_text("❗ 이 명령어는 봇과 1:1 채팅에서만 사용 가능합니다.")
+    if update.effective_chat.type != "private":
         return
+    await send_news(context.bot)
+
+# 3. /price
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        return
+    await send_main_prices(context.bot)
+
+# 🔁 주요 10종 시세 출력
+async def send_main_prices(bot):
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get("https://api.coinpaprika.com/v1/tickers")
+            res.raise_for_status()
+            data = res.json()
+
+        output = ["📊 주요 코인 시세"]
+        now = datetime.now().astimezone(KST).strftime("%Y-%m-%d %H:%M")
+        output.append(f"🕒 {now} 기준\n")
+
+        for coin in data:
+            if coin["id"] in MAIN_COINS:
+                name = coin["name"]
+                symbol = coin["symbol"]
+                price = round(coin["quotes"]["USD"]["price"], 3)
+                change = coin["quotes"]["USD"]["percent_change_24h"]
+                arrow = "🔺" if change > 0 else "🔻"
+                output.append(f"{symbol} ({name}) {arrow} {price}$ ({change:+.2f}%)")
+
+        await send_message(bot, "\n".join(output))
+    except Exception as e:
+        logging.error(f"/price 오류: {e}")
+
+# 🔁 급등 코인 감지 (10% 이상)
+async def send_surge_alert(bot):
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get("https://api.coinpaprika.com/v1/tickers")
+            res.raise_for_status()
+            data = res.json()
+
+        surged = [
+            f"{c['symbol']} ({c['name']}) 🔺 {c['quotes']['USD']['percent_change_24h']:.2f}%"
+            for c in data if c['quotes']['USD']['percent_change_24h'] >= 10
+        ]
+
+        if surged:
+            msg = "🚀 급등 코인 알림 (24H +10%)\n\n" + "\n".join(surged)
+            await send_message(bot, msg)
+    except Exception as e:
+        logging.error(f"급등 코인 오류: {e}")
+
+# 🔁 상승률/하락률 랭킹
+async def send_top_movers(bot):
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get("https://api.coinpaprika.com/v1/tickers")
+            res.raise_for_status()
+            data = res.json()
+
+        sorted_up = sorted(data, key=lambda x: x['quotes']['USD']['percent_change_24h'], reverse=True)[:10]
+        sorted_down = sorted(data, key=lambda x: x['quotes']['USD']['percent_change_24h'])[:10]
+
+        up_msg = ["📈 24H 상승률 TOP10"]
+        for c in sorted_up:
+            up_msg.append(f"{c['symbol']} {c['quotes']['USD']['percent_change_24h']:.2f}%")
+
+        down_msg = ["📉 24H 하락률 TOP10"]
+        for c in sorted_down:
+            down_msg.append(f"{c['symbol']} {c['quotes']['USD']['percent_change_24h']:.2f}%")
+
+        await send_message(bot, "\n".join(up_msg + ["\n"] + down_msg))
+    except Exception as e:
+        logging.error(f"랭킹 전송 오류: {e}")
+
+# 🔁 뉴스 전송
+async def send_news(bot):
     try:
         feed = feedparser.parse("https://cointelegraph.com/rss")
-        articles = feed.entries[:5][::-1]  # 오래된 순 → 최신
-        messages = []
-        for entry in articles:
-            translated = GoogleTranslator(source="auto", target="ko").translate(entry.title)
-            published = datetime(*entry.published_parsed[:6]).astimezone(KST).strftime("%m/%d %H:%M")
-            messages.append(f"📰 {translated}\n🕒 {published}\n🔗 {entry.link}")
-        await update.message.reply_text("\n\n".join(messages))
+        entries = feed.entries[:5]
+
+        output = ["📰 Cointelegraph 뉴스\n"]
+        for entry in entries:
+            title = GoogleTranslator(source='auto', target='ko').translate(entry.title)
+            link = entry.link
+            output.append(f"• {title}\n{link}\n")
+
+        await send_message(bot, "\n".join(output))
     except Exception as e:
-        logger.error(f"news error: {e}")
-        await update.message.reply_text("❌ 뉴스를 불러오는 중 오류 발생")
+        logging.error(f"뉴스 전송 오류: {e}")
 
-# /price
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_private(update):
-        await update.message.reply_text("❗ 이 명령어는 봇과 1:1 채팅에서만 사용 가능합니다.")
-        return
-    coins = ["bitcoin", "ethereum", "ripple", "solana", "dogecoin"]
-    keyboard = [
-        [InlineKeyboardButton(coin.upper(), callback_data=f"price_{coin}")]
-        for coin in coins
-    ]
-    await update.message.reply_text("💰 확인할 코인을 선택하세요:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-# 가격 비교 저장용
-previous_prices = {}
-
-# 버튼 콜백
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    data = query.data
-    if data.startswith("price_"):
-        coin_id = data.split("_")[1]
-        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(url)
-                if response.status_code != 200:
-                    raise Exception("응답 오류")
-                data = response.json()
-                price = data["market_data"]["current_price"]["usd"]
-                percent = data["market_data"]["price_change_percentage_24h"]
-                now = datetime.now(KST).strftime("%H:%M:%S")
-
-                prev = previous_prices.get(coin_id, price)
-                diff = price - prev
-                direction = "📈" if diff > 0 else "📉" if diff < 0 else "⏸️"
-                result = (
-                    f"{direction} {coin_id.upper()} 시세\n"
-                    f"현재: ${price:,.2f}\n"
-                    f"1분 전: ${prev:,.2f}\n"
-                    f"변동: ${diff:,.4f} ({percent:.2f}%)\n"
-                    f"🕒 {now} (KST)"
-                )
-                previous_prices[coin_id] = price
-                await query.message.reply_text(result)
-        except Exception as e:
-            logger.error(f"price error: {e}")
-            await query.message.reply_text("⚠️ 시세 정보를 불러올 수 없습니다.")
-
-# 자동 시세 전송
-async def send_auto_price(app):
-    try:
-        coins = ["bitcoin", "ethereum", "ripple", "solana", "dogecoin"]
-        messages = []
-        async with httpx.AsyncClient(timeout=10) as client:
-            for coin_id in coins:
-                res = await client.get(f"https://api.coingecko.com/api/v3/coins/{coin_id}")
-                if res.status_code != 200:
-                    continue
-                data = res.json()
-                price = data["market_data"]["current_price"]["usd"]
-                percent = data["market_data"]["price_change_percentage_24h"]
-                now = datetime.now(KST).strftime("%H:%M:%S")
-                messages.append(f"💰 {coin_id.upper()}: ${price:,.2f} ({percent:.2f}%) 🕒 {now}")
-        if messages:
-            await app.bot.send_message(chat_id=CHAT_ID, text="📊 실시간 코인 시세\n" + "\n".join(messages))
-    except Exception as e:
-        logger.error(f"auto price error: {e}")
-
-# 스케줄러
-def start_scheduler(app):
-    scheduler.add_job(lambda: asyncio.run(send_auto_price(app)), "interval", minutes=1)
-    scheduler.start()
-    logger.info("✅ 스케줄러 작동 시작")
-
-# Flask 서버
+# Flask (Keepalive용)
 @app.route("/")
-def home():
-    return "Bot is running!"
+def index():
+    return "✅ Coin Bot 작동 중입니다."
 
-# 실행
-if __name__ == "__main__":
+# 봇 및 스케줄러 실행
+async def main():
     from telegram.ext import Application
     application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("news", news))
     application.add_handler(CommandHandler("price", price))
-    application.add_handler(CommandHandler("chart", help_command))
-    application.add_handler(CallbackQueryHandler(button_callback))
+    application.add_handler(CommandHandler("news", news))
 
-    start_scheduler(application)
+    # 배포 직후 1회 실행
+    await send_main_prices(application.bot)
+    await send_surge_alert(application.bot)
+    await send_top_movers(application.bot)
+    await send_news(application.bot)
 
+    # 스케줄러 등록
+    scheduler.add_job(lambda: asyncio.run(send_main_prices(application.bot)), "interval", minutes=1)
+    scheduler.add_job(lambda: asyncio.run(send_surge_alert(application.bot)), "interval", minutes=1)
+    scheduler.add_job(lambda: asyncio.run(send_top_movers(application.bot)), "interval", minutes=10)
+    scheduler.add_job(lambda: asyncio.run(send_news(application.bot)), "interval", hours=1)
+    scheduler.start()
+    logging.info("✅ 스케줄러 작동 시작")
+
+    await application.run_polling()
+
+if __name__ == "__main__":
     import threading
-    threading.Thread(target=app.run, kwargs={"host": "0.0.0.0", "port": 10000}).start()
-
-    application.run_polling()
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000)).start()
+    asyncio.run(main())
