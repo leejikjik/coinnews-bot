@@ -15,6 +15,7 @@ from telegram.ext import (
 )
 import asyncio
 import threading
+import json
 
 # 환경변수
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -57,17 +58,31 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"/news 오류: {e}")
         await update.message.reply_text("❌ 뉴스 가져오기 실패")
 
+# 프록시를 통해 CoinGecko 데이터 가져오기
+async def get_coin_data():
+    try:
+        ids = ",".join(coins.keys())
+        original_url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd"
+        proxy_url = f"https://api.allorigins.win/get?url={httpx.URL(original_url).encode()}"
+        async with httpx.AsyncClient() as client:
+            r = await client.get(proxy_url)
+            r.raise_for_status()
+            # allorigins는 {"contents": "json-string"} 구조로 반환
+            raw_json = json.loads(r.json()["contents"])
+            return raw_json
+    except Exception as e:
+        logger.error(f"CoinGecko 우회 요청 실패: {e}")
+        return None
+
 # /price
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-        ids = ",".join(coins.keys())
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd"
-        async with httpx.AsyncClient() as client:
-            r = await client.get(url)
-            r.raise_for_status()
-            data = r.json()
+        data = await get_coin_data()
+        if not data:
+            await update.message.reply_text("❌ 시세 가져오기 실패")
+            return
 
+        now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
         result = [f"📊 실시간 코인 시세 ({now})"]
         for coin_id, name in coins.items():
             if coin_id in data:
@@ -84,7 +99,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"/price 오류: {e}")
-        await update.message.reply_text("❌ 시세 가져오기 실패")
+        await update.message.reply_text("❌ 시세 처리 중 오류 발생")
 
 # 자동 뉴스
 async def send_auto_news(bot):
@@ -101,14 +116,11 @@ async def send_auto_news(bot):
 # 자동 시세
 async def send_auto_price(bot):
     try:
-        now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-        ids = ",".join(coins.keys())
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd"
-        async with httpx.AsyncClient() as client:
-            r = await client.get(url)
-            r.raise_for_status()
-            data = r.json()
+        data = await get_coin_data()
+        if not data:
+            return
 
+        now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
         result = [f"📊 자동 코인 시세 ({now})"]
         for coin_id, name in coins.items():
             if coin_id in data:
