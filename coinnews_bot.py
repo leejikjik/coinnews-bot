@@ -16,6 +16,7 @@ from telegram.ext import (
 import asyncio
 import threading
 import json
+import urllib.parse
 
 # 환경변수
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -58,16 +59,15 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"/news 오류: {e}")
         await update.message.reply_text("❌ 뉴스 가져오기 실패")
 
-# 프록시를 통해 CoinGecko 데이터 가져오기
+# 프록시를 통한 CoinGecko 시세 호출
 async def get_coin_data():
     try:
         ids = ",".join(coins.keys())
         original_url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd"
-        proxy_url = f"https://api.allorigins.win/get?url={httpx.URL(original_url).encode()}"
+        proxy_url = f"https://api.allorigins.win/get?url={urllib.parse.quote(original_url)}"
         async with httpx.AsyncClient() as client:
             r = await client.get(proxy_url)
             r.raise_for_status()
-            # allorigins는 {"contents": "json-string"} 구조로 반환
             raw_json = json.loads(r.json()["contents"])
             return raw_json
     except Exception as e:
@@ -134,7 +134,6 @@ async def send_auto_price(bot):
             else:
                 result.append(f"{name}: ❌ 데이터 없음")
         await bot.send_message(chat_id=CHAT_ID, text="\n".join(result))
-
     except Exception as e:
         logger.error(f"자동 시세 오류: {e}")
 
