@@ -13,8 +13,8 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
 )
-import threading
 import asyncio
+import threading
 
 # 환경변수
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # 시간대
 KST = timezone("Asia/Seoul")
 
-# Flask
+# Flask 앱
 app = Flask(__name__)
 
 # 코인 목록
@@ -83,19 +83,19 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ 시세 가져오기 실패")
 
 # 자동 뉴스
-async def send_auto_news(application):
+async def send_auto_news(bot):
     try:
         feed = feedparser.parse("https://cointelegraph.com/rss")
         entry = feed.entries[0]
         translated = GoogleTranslator(source="auto", target="ko").translate(entry.title)
         published = datetime(*entry.published_parsed[:6]).astimezone(KST).strftime("%Y-%m-%d %H:%M")
         msg = f"📰 {translated}\n🕒 {published}\n🔗 {entry.link}"
-        await application.bot.send_message(chat_id=CHAT_ID, text=msg)
+        await bot.send_message(chat_id=CHAT_ID, text=msg)
     except Exception as e:
         logger.error(f"자동 뉴스 오류: {e}")
 
 # 자동 시세
-async def send_auto_price(application):
+async def send_auto_price(bot):
     try:
         now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
         async with httpx.AsyncClient() as client:
@@ -112,7 +112,7 @@ async def send_auto_price(application):
                     change = f"{sign} {abs(diff):,.4f}" if prev else "➖ 변화 없음"
                     result.append(f"{name}: {price:,.2f} USD ({change})")
                     previous_prices[coin_id] = price
-            await application.bot.send_message(chat_id=CHAT_ID, text="\n".join(result))
+            await bot.send_message(chat_id=CHAT_ID, text="\n".join(result))
     except Exception as e:
         logger.error(f"자동 시세 오류: {e}")
 
@@ -121,30 +121,35 @@ async def send_auto_price(application):
 def home():
     return "✅ CoinNewsBot 작동 중"
 
-# 스케줄러 시작
-def start_scheduler(application):
+# 스케줄러
+def start_scheduler(bot):
     scheduler = BackgroundScheduler()
-    scheduler.add_job(lambda: asyncio.create_task(send_auto_news(application)), "interval", minutes=30)
-    scheduler.add_job(lambda: asyncio.create_task(send_auto_price(application)), "interval", minutes=1)
+
+    def run_news():
+        asyncio.run(send_auto_news(bot))
+
+    def run_price():
+        asyncio.run(send_auto_price(bot))
+
+    scheduler.add_job(run_news, "interval", minutes=30)
+    scheduler.add_job(run_price, "interval", minutes=1)
     scheduler.start()
     logger.info("✅ 스케줄러 작동 시작")
 
-# Telegram 봇 실행 함수
-async def start_bot():
+# Telegram 봇 실행
+def start_bot():
     app_bot = ApplicationBuilder().token(TOKEN).build()
     app_bot.add_handler(CommandHandler("start", start))
     app_bot.add_handler(CommandHandler("news", news))
     app_bot.add_handler(CommandHandler("price", price))
-    start_scheduler(app_bot)
-    await app_bot.run_polling()
 
-# 병렬 실행: Telegram Bot + Flask
-def run_all():
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_bot())
+    # 스케줄러 시작
+    start_scheduler(app_bot.bot)
 
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000)).start()
-    loop.run_forever()
+    # run_polling은 메인스레드에서 직접 실행
+    app_bot.run_polling()
 
+# 메인 실행
 if __name__ == "__main__":
-    run_all()
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000)).start()
+    start_bot()
