@@ -11,11 +11,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# 환경변수
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# 로깅 설정
+# 로그 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,6 @@ app = Flask(__name__)
 def index():
     return "✅ Coin Bot is running."
 
-# 코인 한글 이름
 COIN_NAMES = {
     "bitcoin": "비트코인",
     "ethereum": "이더리움",
@@ -35,14 +33,11 @@ COIN_NAMES = {
     "dogecoin": "도지코인"
 }
 
-# 이전 가격 저장용
 previous_prices = {}
 
-# 뉴스 전송 함수
 async def send_auto_news(bot: Bot):
     try:
-        rss_url = "https://cointelegraph.com/rss"
-        feed = feedparser.parse(rss_url)
+        feed = feedparser.parse("https://cointelegraph.com/rss")
         entries = sorted(feed.entries, key=lambda x: x.published_parsed)[-5:]
 
         messages = []
@@ -61,20 +56,16 @@ async def send_auto_news(bot: Bot):
     except Exception as e:
         logger.error(f"[뉴스 오류] {e}")
 
-# 시세 전송 함수
 async def send_auto_price(bot: Bot):
     try:
         url = "https://api.coingecko.com/api/v3/simple/price"
         coins = list(COIN_NAMES.keys())
-        params = {
-            "ids": ",".join(coins),
-            "vs_currencies": "usd"
-        }
+        params = {"ids": ",".join(coins), "vs_currencies": "usd"}
 
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, params=params)
             if resp.status_code == 429:
-                raise Exception("CoinGecko API 응답 코드: 429")
+                raise Exception("CoinGecko API 429 Too Many Requests")
             data = resp.json()
 
         now = datetime.now(timezone("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
@@ -102,8 +93,9 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_auto_price(context.bot)
 
-# 스케줄러 함수
-def start_scheduler(bot: Bot, loop: asyncio.AbstractEventLoop):
+# 스케줄러
+def start_scheduler(bot: Bot):
+    loop = asyncio.get_event_loop()
     scheduler = BackgroundScheduler()
 
     scheduler.add_job(
@@ -114,27 +106,25 @@ def start_scheduler(bot: Bot, loop: asyncio.AbstractEventLoop):
     scheduler.add_job(
         lambda: loop.create_task(send_auto_price(bot)),
         trigger="interval",
-        minutes=3  # 과도한 호출 방지
+        minutes=3
     )
 
     scheduler.start()
     logger.info("✅ 스케줄러 시작됨")
 
-# main 실행
+# 메인
 if __name__ == "__main__":
-    # Flask 서버 실행
     from threading import Thread
     Thread(target=lambda: app.run(host="0.0.0.0", port=10000)).start()
 
-    # Telegram Bot 실행
     async def main():
         application = ApplicationBuilder().token(BOT_TOKEN).build()
+
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("news", news))
         application.add_handler(CommandHandler("price", price))
 
-        # 스케줄러 시작
-        start_scheduler(application.bot, application.loop)
+        start_scheduler(application.bot)
 
         await application.initialize()
         await application.start()
