@@ -1,185 +1,194 @@
 import os
 import logging
 import asyncio
+import httpx
 from flask import Flask
-from telegram import Update
+from telegram import Update, InputMediaPhoto
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from deep_translator import GoogleTranslator
-import httpx
+import feedparser
 
-# ===================== ⚙️ 설정 =====================
+# 로깅 설정
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# 환경변수
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-KST = timezone(timedelta(hours=9))
-app = Flask(__name__)
-scheduler = BackgroundScheduler()
-logging.basicConfig(level=logging.INFO)
 
-# ===================== 🗺️ 코인 이름 변환 =====================
-coin_name_map = {
+# 주요 코인 ID 및 이름
+MAIN_COINS = {
     "bitcoin": "비트코인",
     "ethereum": "이더리움",
-    "ripple": "리플",
+    "xrp": "리플",
     "solana": "솔라나",
     "dogecoin": "도지코인",
     "cardano": "에이다",
-    "binance-coin": "바이낸스코인",
+    "ton": "톤코인",
     "tron": "트론",
-    "polkadot": "폴카닷",
-    "litecoin": "라이트코인",
+    "aptos": "앱토스",
+    "avalanche": "아발란체",
 }
 
-symbol_name_map = {
-    "BTC": "비트코인",
-    "ETH": "이더리움",
-    "XRP": "리플",
-    "SOL": "솔라나",
-    "DOGE": "도지코인",
-    "ADA": "에이다",
-    "BNB": "바이낸스코인",
-    "TRX": "트론",
-    "DOT": "폴카닷",
-    "LTC": "라이트코인",
-}
+app = Flask(__name__)
+scheduler = BackgroundScheduler()
 
-major_symbols = list(symbol_name_map.keys())
+# 주요 코인 로고 URL
+def get_logo_url(coin_id):
+    return f"https://static.coinpaprika.com/coin/{coin_id}/logo.png"
 
-# ===================== 🔎 뉴스 =====================
-import feedparser
-
-def get_news():
-    feed = feedparser.parse("https://cointelegraph.com/rss")
-    news_items = feed.entries[:5]
-    translated = []
-    for entry in news_items:
-        title = GoogleTranslator(source="auto", target="ko").translate(entry.title)
-        link = entry.link
-        translated.append(f"📰 {title}\n🔗 {link}")
-    return "\n\n".join(translated)
-
-async def send_news(chat_id, context):
-    try:
-        news = get_news()
-        await context.bot.send_message(chat_id=chat_id, text=f"<b>📢 최신 코인 뉴스</b>\n\n{news}", parse_mode="HTML")
-    except Exception as e:
-        logging.error(f"뉴스 전송 오류: {e}")
-
-# ===================== 💸 시세 =====================
-async def fetch_prices():
-    url = "https://api.coinpaprika.com/v1/tickers"
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url)
-        data = resp.json()
-        return [coin for coin in data if coin["symbol"] in major_symbols]
-
-async def send_price(chat_id, context):
-    try:
-        coins = await fetch_prices()
-        msg = f"<b>💰 주요 코인 시세</b> ({datetime.now(KST).strftime('%H:%M:%S')})\n\n"
-        for c in coins:
-            symbol = c["symbol"]
-            name = symbol_name_map.get(symbol, "")
-            price = float(c["quotes"]["USD"]["price"])
-            change = float(c["quotes"]["USD"]["percent_change_24h"])
-            msg += f"{symbol} ({name}): ${price:,.2f} ({change:+.2f}%)\n"
-        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
-    except Exception as e:
-        logging.error(f"시세 전송 오류: {e}")
-
-# ===================== 📈 상승/하락 랭킹 =====================
-async def send_rankings(context):
-    try:
-        url = "https://api.coinpaprika.com/v1/tickers"
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url)
-            coins = resp.json()
-        ranked = sorted(coins, key=lambda x: x["quotes"]["USD"]["percent_change_24h"], reverse=True)
-        top_gainers = ranked[:10]
-        top_losers = ranked[-10:][::-1]
-
-        gain_msg = "<b>🚀 24시간 상승률 TOP 10</b>\n\n"
-        for c in top_gainers:
-            gain_msg += f"{c['symbol']} ({c['name']}): {c['quotes']['USD']['percent_change_24h']:+.2f}%\n"
-
-        lose_msg = "\n<b>📉 하락률 TOP 10</b>\n\n"
-        for c in top_losers:
-            lose_msg += f"{c['symbol']} ({c['name']}): {c['quotes']['USD']['percent_change_24h']:+.2f}%\n"
-
-        await context.bot.send_message(chat_id=CHAT_ID, text=gain_msg + lose_msg, parse_mode="HTML")
-    except Exception as e:
-        logging.error(f"랭킹 전송 오류: {e}")
-
-# ===================== 🚨 급등 감지 =====================
-async def send_spike_coins(context):
-    try:
-        url = "https://api.coinpaprika.com/v1/tickers"
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url)
-            coins = resp.json()
-        spiked = [
-            c for c in coins if c["quotes"]["USD"]["percent_change_24h"] >= 10 and c["symbol"] in major_symbols
-        ]
-        if spiked:
-            msg = "<b>📈 급등 코인 알림 (24H 10%↑)</b>\n\n"
-            for c in spiked:
-                msg += f"{c['symbol']} ({c['name']}): {c['quotes']['USD']['percent_change_24h']:+.2f}%\n"
-            await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="HTML")
-    except Exception as e:
-        logging.error(f"급등 코인 전송 오류: {e}")
-
-# ===================== 🧠 명령어 =====================
+# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text="🟢 코인 뉴스봇이 작동 중입니다!\n\n/price : 주요 코인 시세\n/news : 코인 뉴스",
+            text="🟢 봇이 작동 중입니다.\n/news : 최신 뉴스\n/price : 현재 시세 확인"
         )
 
+# /price
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type == "private":
-        await send_price(update.effective_chat.id, context)
+    if update.effective_chat.type != "private":
+        return
 
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get("https://api.coinpaprika.com/v1/tickers")
+            data = res.json()
+
+        result = []
+        for item in data:
+            if item["id"] in MAIN_COINS:
+                name_kr = MAIN_COINS[item["id"]]
+                logo = get_logo_url(item["id"])
+                price = float(item["quotes"]["USD"]["price"])
+                result.append(f"🪙 <b>{item['symbol']} ({name_kr})</b>\n💰 ${price:,.2f}\n🖼 {logo}")
+
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="\n\n".join(result),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"/price 오류: {e}")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ 시세 정보를 불러오지 못했습니다.")
+
+# /news
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type == "private":
-        await send_news(update.effective_chat.id, context)
+    if update.effective_chat.type != "private":
+        return
 
-# ===================== ⏱ 스케줄러 =====================
-def start_scheduler(application):
-    scheduler.add_job(lambda: asyncio.run(send_price(CHAT_ID, application.bot)), "interval", minutes=1)
-    scheduler.add_job(lambda: asyncio.run(send_rankings(application.bot)), "interval", minutes=10)
-    scheduler.add_job(lambda: asyncio.run(send_spike_coins(application.bot)), "interval", minutes=30)
-    scheduler.add_job(lambda: asyncio.run(send_news(CHAT_ID, application.bot)), "interval", minutes=30)
+    try:
+        feed = feedparser.parse("https://cointelegraph.com/rss")
+        messages = []
+        for entry in feed.entries[:5]:
+            translated = GoogleTranslator(source='auto', target='ko').translate(entry.title)
+            messages.append(f"📰 <b>{translated}</b>\n{entry.link}")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="\n\n".join(messages), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"뉴스 오류: {e}")
+
+# 자동 전송 함수
+async def auto_send_all(application):
+    await send_price(application)
+    await send_top_rank(application)
+    await send_pump_alert(application)
+
+# 자동 시세 전송
+async def send_price(app):
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get("https://api.coinpaprika.com/v1/tickers")
+            data = res.json()
+
+        msg = "<b>📊 주요 코인 시세 (1분 간격)</b>\n\n"
+        for item in data:
+            if item["id"] in MAIN_COINS:
+                name_kr = MAIN_COINS[item["id"]]
+                price = float(item["quotes"]["USD"]["price"])
+                msg += f"🪙 <b>{item['symbol']} ({name_kr})</b> - ${price:,.2f}\n"
+
+        await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"시세 전송 오류: {e}")
+
+# 급등 알림
+async def send_pump_alert(app):
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get("https://api.coinpaprika.com/v1/tickers")
+            data = res.json()
+
+        pumps = []
+        for item in data:
+            change = item["quotes"]["USD"].get("percent_change_1h", 0)
+            if change and change > 10:
+                pumps.append(f"🚀 {item['symbol']} +{change:.2f}%")
+
+        if pumps:
+            await app.bot.send_message(chat_id=CHAT_ID, text="🔥 <b>급등 코인 알림</b>\n\n" + "\n".join(pumps), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"급등 감지 오류: {e}")
+
+# 상승률/하락률 랭킹
+async def send_top_rank(app):
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get("https://api.coinpaprika.com/v1/tickers")
+            data = res.json()
+
+        sorted_up = sorted(data, key=lambda x: x["quotes"]["USD"].get("percent_change_24h", 0), reverse=True)[:10]
+        sorted_down = sorted(data, key=lambda x: x["quotes"]["USD"].get("percent_change_24h", 0))[:10]
+
+        msg = "<b>📈 24시간 상승률 TOP 10</b>\n"
+        for item in sorted_up:
+            change = item["quotes"]["USD"].get("percent_change_24h", 0)
+            msg += f"🔺 {item['symbol']} +{change:.2f}%\n"
+
+        msg += "\n<b>📉 24시간 하락률 TOP 10</b>\n"
+        for item in sorted_down:
+            change = item["quotes"]["USD"].get("percent_change_24h", 0)
+            msg += f"🔻 {item['symbol']} {change:.2f}%\n"
+
+        await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"랭킹 전송 오류: {e}")
+
+# Flask keepalive
+@app.route("/")
+def index():
+    return "CoinNews Bot Running"
+
+# 명령어 등록
+def add_handlers(app):
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("price", price))
+    app.add_handler(CommandHandler("news", news))
+
+# 스케줄러 시작
+def start_scheduler(app):
+    scheduler.add_job(lambda: asyncio.run(send_price(app)), "interval", minutes=1)
+    scheduler.add_job(lambda: asyncio.run(send_top_rank(app)), "interval", minutes=10)
+    scheduler.add_job(lambda: asyncio.run(send_pump_alert(app)), "interval", minutes=10)
     scheduler.start()
-    logging.info("✅ JobQueue 스케줄러 시작됨")
+    logger.info("✅ 스케줄러 작동 시작")
 
-# ===================== 🚀 실행 =====================
-if __name__ == "__main__":
-    from telegram.ext import Application
-
+# 메인 실행
+async def main():
     application = ApplicationBuilder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("price", price))
-    application.add_handler(CommandHandler("news", news))
-
-    async def initial_tasks():
-        await send_price(CHAT_ID, application.bot)
-        await send_spike_coins(application.bot)
-        await send_rankings(application.bot)
-        await send_news(CHAT_ID, application.bot)
-
-    loop = asyncio.get_event_loop()
-    loop.create_task(initial_tasks())
+    add_handlers(application)
     start_scheduler(application)
+    await auto_send_all(application)
+    await application.run_polling()
 
-    from threading import Thread
-    def run_flask():
-        app.run(host="0.0.0.0", port=10000)
-
-    Thread(target=run_flask).start()
-    application.run_polling()
+if __name__ == "__main__":
+    import threading
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000)).start()
+    asyncio.run(main())
