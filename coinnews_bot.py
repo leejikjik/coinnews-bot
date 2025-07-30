@@ -42,7 +42,7 @@ app = Flask(__name__)
 def home():
     return "CoinNews Bot Running"
 
-# ─────────── 핸들러 ───────────
+# ─────────── Telegram 핸들러 ───────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         await update.message.reply_text(
@@ -68,7 +68,6 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("\n\n".join(result), parse_mode="HTML")
         else:
             await update.message.reply_text("❌ 주요 코인 시세를 찾을 수 없습니다.")
-
     except Exception as e:
         logger.error(f"/price 오류: {e}")
         await update.message.reply_text("❌ 시세 정보를 불러오지 못했습니다.")
@@ -171,8 +170,20 @@ def run():
 
     # Flask 실행
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000)).start()
+
     # APScheduler 실행
     threading.Thread(target=start_scheduler, args=(application.bot,)).start()
+
+    # 🟢 배포 직후 최초 1회 자동 전송 (loop 충돌 방지)
+    def run_initial_tasks():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(send_price(application.bot))
+        loop.run_until_complete(send_top_rank(application.bot))
+        loop.run_until_complete(send_pump_alert(application.bot))
+        loop.close()
+
+    threading.Thread(target=run_initial_tasks).start()
 
     application.run_polling()
 
