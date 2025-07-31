@@ -1,60 +1,146 @@
 import os
 import logging
 from flask import Flask
-from threading import Thread
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
+    filters,
 )
+from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
+import httpx
+import feedparser
+from deep_translator import GoogleTranslator
 
 # 로그 설정
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # 환경변수
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+GROUP_ID = os.environ.get("TELEGRAM_GROUP_ID")
 
-# Flask 앱 (Render용 KeepAlive)
-flask_app = Flask(__name__)
+# Flask 앱 (Render keep-alive용)
+app = Flask(__name__)
 
-@flask_app.route("/")
-def home():
-    return "Telegram Bot is running."
+@app.route("/")
+def index():
+    return "Bot is running!"
 
-# /getid 명령어
-async def getid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    chat_type = chat.type
-    chat_id = chat.id
+# 텔레그램 명령어 핸들러
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("✅ 봇이 작동 중입니다!\n/news : 최신 뉴스\n/price : 주요 코인 시세")
 
-    chat_type_label = {
-        "private": "👤 개인 채팅",
-        "group": "👥 그룹 채팅",
-        "supergroup": "👥 슈퍼그룹 채팅",
-        "channel": "📢 채널"
-    }.get(chat_type, "❓알 수 없음")
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("✅ 테스트 성공!")
 
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"✅ 현재 채팅 정보\n\n📌 Chat Type: {chat_type_label}\n🆔 Chat ID: `{chat_id}`",
-        parse_mode="Markdown"
-    )
+async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        return
+    feed = feedparser.parse("https://cointelegraph.com/rss")
+    messages = []
+    for entry in feed.entries[:5][::-1]:
+        translated = GoogleTranslator(source='auto', target='ko').translate(entry.title)
+        msg = f"📰 <b>{translated}</b>\n{entry.link}"
+        messages.append(msg)
+    for msg in messages:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, parse_mode="HTML")
 
-# 봇 실행 함수
-def run_bot():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("getid", getid))
-    app.run_polling()
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        return
+    await send_price(context.bot, update.effective_chat.id)
 
-# Flask 실행 함수
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=8080)
+# 주요 코인 시세 전송 함수
+async def send_price(bot, chat_id):
+    coins = {
+        "bitcoin": "BTC (비트코인)",
+        "ethereum": "ETH (이더리움)",
+        "ripple": "XRP (리플)",
+        "solana": "SOL (솔라나)",
+        "dogecoin": "DOGE (도지코인)",
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            prices = {}
+            for coin_id, name in coins.items():
+                url = f"https://api.coinpaprika.com/v1/tickers/{coin_id}"
+                res = await client.get(url)
+                if res.status_code == 200:
+                    data = res.json()
+                    prices[name] = data["quotes"]["USD"]["price"]
+            msg = "<b>📊 주요 코인 시세</b>\n"
+            for name, price in prices.items():
+                msg += f"{name} : ${price:,.2f}\n"
+            await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"시세 전송 오류: {e}")
 
-# 병렬 실행
+# 급등 랭킹 전송
+async def send_ranking(bot):
+    try:
+        url = "https://api.coinpaprika.com/v1/tickers"
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url)
+            data = res.json()
+            ranked = sorted(data, key=lambda x: x["quotes"]["USD"]["percent_change_24h"], reverse=True)
+            top10_up = ranked[:10]
+            top10_down = ranked[-10:]
+            msg = "📈 <b>24시간 상승률 TOP10</b>\n"
+            for c in top10_up:
+                msg += f"{c['symbol']} : {c['quotes']['USD']['percent_change_24h']:.2f}%\n"
+            msg += "\n📉 <b>하락률 TOP10</b>\n"
+            for c in top10_down:
+                msg += f"{c['symbol']} : {c['quotes']['USD']['percent_change_24h']:.2f}%\n"
+            await bot.send_message(chat_id=GROUP_ID, text=msg, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"랭킹 전송 오류: {e}")
+
+# 뉴스 자동 전송
+async def auto_news(bot):
+    try:
+        feed = feedparser.parse("https://cointelegraph.com/rss")
+        messages = []
+        for entry in feed.entries[:3][::-1]:
+            translated = GoogleTranslator(source='auto', target='ko').translate(entry.title)
+            msg = f"📰 <b>{translated}</b>\n{entry.link}"
+            messages.append(msg)
+        for msg in messages:
+            await bot.send_message(chat_id=GROUP_ID, text=msg, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"뉴스 전송 오류: {e}")
+
+# 스케줄러 작업 정의
+def start_scheduler(app):
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(lambda: app.create_task(send_price(app.bot, GROUP_ID)), 'interval', minutes=1)
+    scheduler.add_job(lambda: app.create_task(send_ranking(app.bot)), 'interval', minutes=10)
+    scheduler.add_job(lambda: app.create_task(auto_news(app.bot)), 'interval', hours=1)
+    scheduler.start()
+
+# main 진입점
+def main():
+    import threading
+    from telegram.ext import Application
+
+    application = ApplicationBuilder().token(TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("news", news))
+    application.add_handler(CommandHandler("price", price))
+    application.add_handler(CommandHandler("test", test))
+
+    start_scheduler(application)
+
+    thread = threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000))
+    thread.start()
+
+    application.run_polling()
+
 if __name__ == "__main__":
-    Thread(target=run_flask).start()
-    run_bot()
+    main()
