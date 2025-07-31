@@ -24,14 +24,14 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GROUP_ID = os.environ.get("TELEGRAM_GROUP_ID")
 
-# Flask 앱 (Render keep-alive)
+# Flask 앱
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def index():
     return "Bot is running!"
 
-# 봇 명령어
+# 명령어 핸들러
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         await update.message.reply_text("✅ 봇이 작동 중입니다!\n/news : 최신 뉴스\n/price : 주요 코인 시세")
@@ -57,14 +57,14 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await send_price(context.bot, update.effective_chat.id)
 
-# 주요 코인 시세
+# 시세 전송 함수
 async def send_price(bot, chat_id):
     coins = {
-        "bitcoin": "BTC (비트코인)",
-        "ethereum": "ETH (이더리움)",
-        "ripple": "XRP (리플)",
-        "solana": "SOL (솔라나)",
-        "dogecoin": "DOGE (도지코인)",
+        "btc-bitcoin": "BTC (비트코인)",
+        "eth-ethereum": "ETH (이더리움)",
+        "xrp-xrp": "XRP (리플)",
+        "sol-solana": "SOL (솔라나)",
+        "doge-dogecoin": "DOGE (도지코인)",
     }
     try:
         async with httpx.AsyncClient() as client:
@@ -82,7 +82,7 @@ async def send_price(bot, chat_id):
     except Exception as e:
         logger.error(f"시세 전송 오류: {e}")
 
-# 급등/하락 랭킹
+# 상승/하락 랭킹
 async def send_ranking(bot):
     try:
         url = "https://api.coinpaprika.com/v1/tickers"
@@ -102,7 +102,7 @@ async def send_ranking(bot):
     except Exception as e:
         logger.error(f"랭킹 전송 오류: {e}")
 
-# 자동 뉴스
+# 자동 뉴스 전송
 async def auto_news(bot):
     try:
         feed = feedparser.parse("https://cointelegraph.com/rss")
@@ -116,18 +116,16 @@ async def auto_news(bot):
     except Exception as e:
         logger.error(f"뉴스 전송 오류: {e}")
 
-# 스케줄러
+# APScheduler 시작
 def start_scheduler(bot):
     loop = asyncio.get_event_loop()
     scheduler = BackgroundScheduler()
-
     scheduler.add_job(lambda: asyncio.run_coroutine_threadsafe(send_price(bot, GROUP_ID), loop), 'interval', minutes=1)
     scheduler.add_job(lambda: asyncio.run_coroutine_threadsafe(send_ranking(bot), loop), 'interval', minutes=10)
     scheduler.add_job(lambda: asyncio.run_coroutine_threadsafe(auto_news(bot), loop), 'interval', hours=1)
-
     scheduler.start()
 
-# 메인
+# 메인 실행
 def main():
     application = ApplicationBuilder().token(TOKEN).build()
 
@@ -136,12 +134,9 @@ def main():
     application.add_handler(CommandHandler("news", news))
     application.add_handler(CommandHandler("price", price))
 
-    # Flask 백그라운드 실행
-    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=10000)).start()
+    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))).start()
 
-    # run_polling 전에 스케줄러 시작
     start_scheduler(application.bot)
-
     application.run_polling()
 
 if __name__ == "__main__":
