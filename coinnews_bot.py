@@ -31,18 +31,40 @@ flask_app = Flask(__name__)
 def index():
     return "Bot is running!"
 
+# 변동률 저장용 딕셔너리
+last_prices = {}
+
+# 그룹 참여 여부 검사
+async def is_group_member(bot, user_id):
+    try:
+        member = await bot.get_chat_member(chat_id=GROUP_ID, user_id=user_id)
+        return member.status in ["creator", "administrator", "member"]
+    except Exception as e:
+        logger.warning(f"멤버 확인 실패: {e}")
+        return False
+
 # 명령어 핸들러
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
-        await update.message.reply_text("✅ 봇이 작동 중입니다!\n/news : 최신 뉴스\n/price : 주요 코인 시세")
+        if await is_group_member(context.bot, update.effective_user.id):
+            await update.message.reply_text("✅ 봇이 작동 중입니다!\n/news : 최신 뉴스\n/price : 주요 코인 시세")
+        else:
+            await update.message.reply_text("⚠️ 이 기능은 그룹 참가자만 사용할 수 있습니다.")
 
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
-        await update.message.reply_text("✅ 테스트 성공!")
+        if await is_group_member(context.bot, update.effective_user.id):
+            await update.message.reply_text("✅ 테스트 성공!")
+        else:
+            await update.message.reply_text("⚠️ 이 기능은 그룹 참가자만 사용할 수 있습니다.")
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
+    if not await is_group_member(context.bot, update.effective_user.id):
+        await update.message.reply_text("⚠️ 이 기능은 그룹 참가자만 사용할 수 있습니다.")
+        return
+
     feed = feedparser.parse("https://cointelegraph.com/rss")
     messages = []
     for entry in feed.entries[:5][::-1]:
@@ -55,9 +77,13 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
+    if not await is_group_member(context.bot, update.effective_user.id):
+        await update.message.reply_text("⚠️ 이 기능은 그룹 참가자만 사용할 수 있습니다.")
+        return
+
     await send_price(context.bot, update.effective_chat.id)
 
-# 시세 전송 함수
+# 시세 전송 함수 (+변동률)
 async def send_price(bot, chat_id):
     coins = {
         "btc-bitcoin": "BTC (비트코인)",
@@ -68,21 +94,27 @@ async def send_price(bot, chat_id):
     }
     try:
         async with httpx.AsyncClient() as client:
-            prices = {}
+            msg = "<b>📊 주요 코인 시세</b>\n"
             for coin_id, name in coins.items():
                 url = f"https://api.coinpaprika.com/v1/tickers/{coin_id}"
                 res = await client.get(url)
                 if res.status_code == 200:
                     data = res.json()
-                    prices[name] = data["quotes"]["USD"]["price"]
-            msg = "<b>📊 주요 코인 시세</b>\n"
-            for name, price in prices.items():
-                msg += f"{name} : ${price:,.2f}\n"
-            await bot.send_message(chat_id=chat_id, text=msg, parse_mode="HTML")
+                    price = data["quotes"]["USD"]["price"]
+                    symbol = "▲" if coin_id in last_prices and price > last_prices[coin_id] else "▼"
+                    if coin_id not in last_prices:
+                        symbol = " "
+                        diff_pct = ""
+                    else:
+                        prev = last_prices[coin_id]
+                        diff_pct = f"{(price - prev) / prev * 100:.2f}%"
+                    last_prices[coin_id] = price
+                    msg += f"{name} : ${price:,.2f} {symbol} {diff_pct}\n"
+            await bot.send_message(chat_id=chat_id, text=msg.strip(), parse_mode="HTML")
     except Exception as e:
         logger.error(f"시세 전송 오류: {e}")
 
-# 상승/하락 랭킹
+# 랭킹 전송
 async def send_ranking(bot):
     try:
         url = "https://api.coinpaprika.com/v1/tickers"
@@ -102,7 +134,7 @@ async def send_ranking(bot):
     except Exception as e:
         logger.error(f"랭킹 전송 오류: {e}")
 
-# 자동 뉴스 전송
+# 뉴스 자동 전송
 async def auto_news(bot):
     try:
         feed = feedparser.parse("https://cointelegraph.com/rss")
@@ -116,7 +148,7 @@ async def auto_news(bot):
     except Exception as e:
         logger.error(f"뉴스 전송 오류: {e}")
 
-# APScheduler 시작
+# 스케줄러
 def start_scheduler(bot):
     loop = asyncio.get_event_loop()
     scheduler = BackgroundScheduler()
@@ -125,7 +157,7 @@ def start_scheduler(bot):
     scheduler.add_job(lambda: asyncio.run_coroutine_threadsafe(auto_news(bot), loop), 'interval', hours=1)
     scheduler.start()
 
-# 메인 실행
+# 실행
 def main():
     application = ApplicationBuilder().token(TOKEN).build()
 
@@ -135,7 +167,6 @@ def main():
     application.add_handler(CommandHandler("price", price))
 
     threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))).start()
-
     start_scheduler(application.bot)
     application.run_polling()
 
