@@ -1,184 +1,195 @@
 import os
 import logging
 import asyncio
+from datetime import datetime, timedelta
 import feedparser
 import httpx
 from flask import Flask
-from datetime import datetime, timedelta
-from pytz import timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 from deep_translator import GoogleTranslator
-from telegram import Update, Chat, ChatMember, ChatMemberUpdated, constants
+from telegram import Update, Chat, ChatMemberUpdated
+from telegram.constants import ChatType, ParseMode
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler,
-    filters, ChatMemberHandler
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ChatMemberHandler,
+    ContextTypes,
+    filters,
 )
 
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")  # 그룹방 ID
+# 환경변수
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+GROUP_CHAT_ID = os.environ.get("TELEGRAM_GROUP_CHAT_ID")
+ADMIN_IDS = os.environ.get("ADMIN_IDS", "")  # 쉼표로 구분된 숫자 ID들
+ADMIN_ID_LIST = [int(i.strip()) for i in ADMIN_IDS.split(",") if i.strip().isdigit()]
 
-app = Flask(__name__)
+# 기본 설정
 logging.basicConfig(level=logging.INFO)
-
-application = ApplicationBuilder().token(TOKEN).build()
+app = Flask(__name__)
 scheduler = BackgroundScheduler()
+user_db = {}  # {user_id: {'id': xxxx, 'name': '닉네임'}}
+news_cache = set()
+coin_history = {}
+user_counter = 1000
+user_activity = {}
 
-KST = timezone("Asia/Seoul")
+# 📌 고유 ID 발급 함수
+def assign_user_id(user_id, username):
+    global user_counter
+    if user_id not in user_db:
+        user_counter += 1
+        user_db[user_id] = {"id": user_counter, "name": username or f"user{user_counter}"}
+    return user_db[user_id]["id"]
 
-user_ids = {}
-sent_news_links = set()
+# ✅ 관리자 확인
+def is_admin(user_id):
+    return user_id in ADMIN_ID_LIST
 
-coin_kor = {
-    'bitcoin': '비트코인',
-    'ethereum': '이더리움',
-    'xrp': '리플',
-    'solana': '솔라나',
-    'dogecoin': '도지코인'
-}
+# ✅ 개인 채팅에서만 실행
+def private_chat_only(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat.type != ChatType.PRIVATE:
+            return
+        return await func(update, context)
+    return wrapper
 
-# 📌 1:1 채팅 제한 (그룹 참가자만)
-def is_user_allowed(user_id):
-    return str(user_id) in user_ids
+# ✅ 그룹 유저 인증 여부 확인
+def is_registered(user_id):
+    return user_id in user_db
 
-# ✅ 명령어: /start
+# ✅ 메시지 활동 기록
+def record_activity(user_id):
+    user_activity.setdefault(user_id, {"messages": 0, "last": datetime.now()})
+    user_activity[user_id]["messages"] += 1
+    user_activity[user_id]["last"] = datetime.now()
+
+# ✅ 1. /start
+@private_chat_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.chat.type != Chat.PRIVATE:
+    user_id = update.effective_user.id
+    if not is_registered(user_id):
+        await update.message.reply_text("❌ 그룹에 먼저 참여해주세요.")
         return
-    user_id = str(update.effective_user.id)
-    if not is_user_allowed(user_id):
-        await update.message.reply_text("❌ 그룹방 참가자만 사용할 수 있습니다.")
-        return
-    await update.message.reply_text("🟢 봇 작동 중입니다. /help 로 명령어 확인 가능")
+    msg = "🟢 코인봇 사용 안내\n/help : 명령어 목록\n/price : 주요 코인 시세\n/news : 최신 뉴스\n/summary : 요약\n/analyze [코인]"
+    await update.message.reply_text(msg)
 
-# ✅ 명령어: /help
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.chat.type != Chat.PRIVATE:
-        return
-    text = """
-📌 사용 가능한 명령어:
-/start - 봇 작동 확인
-/price - 주요 코인 시세 확인
-/news - 최신 뉴스 보기
-/summary - 오늘의 요약
-/analyze [코인] - 코인 분석
-/test - 테스트 응답
-/help - 도움말
-"""
-    await update.message.reply_text(text)
+# ✅ 2. /help
+@private_chat_only
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "🧾 사용 가능한 명령어:\n"
+        "/start - 봇 시작 안내\n"
+        "/price - 주요 코인 시세 보기\n"
+        "/news - 최신 뉴스 보기\n"
+        "/summary - 오늘 요약\n"
+        "/analyze [코인] - 분석 요약\n"
+        "\n👑 관리자 전용:\n"
+        "/ban [id] /unban [id]\n"
+        "/id [@username or id]\n"
+        "/config /stats"
+    )
+    await update.message.reply_text(msg)
 
-# ✅ 명령어: /test
-async def test_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = f"✅ 테스트 성공! ({'DM' if update.message.chat.type == 'private' else '그룹방'})"
-    await update.message.reply_text(text)
+# ✅ 3. /test
+async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == ChatType.PRIVATE:
+        await update.message.reply_text("✅ 개인 메시지 테스트 응답 완료")
+    elif str(update.effective_chat.id) == GROUP_CHAT_ID:
+        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="✅ 그룹방 테스트 응답 완료")
 
-# ✅ 뉴스 출력
-async def send_news():
+# ✅ 4. 뉴스 전송
+async def send_news(context: ContextTypes.DEFAULT_TYPE):
     feed = feedparser.parse("https://cointelegraph.com/rss")
-    messages = []
-    for entry in reversed(feed.entries[:5]):
-        if entry.link in sent_news_links:
+    new_items = []
+    for entry in feed.entries[:5]:
+        if entry.link in news_cache:
             continue
-        translated = GoogleTranslator(source='auto', target='ko').translate(entry.title)
-        time_obj = datetime(*entry.published_parsed[:6], tzinfo=timezone('UTC')).astimezone(KST)
-        messages.append(f"📰 <b>{translated}</b>\n🕒 {time_obj.strftime('%m/%d %H:%M')}\n🔗 {entry.link}")
-        sent_news_links.add(entry.link)
-    if messages:
-        await application.bot.send_message(chat_id=CHAT_ID, text="\n\n".join(messages), parse_mode=constants.ParseMode.HTML)
+        news_cache.add(entry.link)
+        translated = GoogleTranslator(source="auto", target="ko").translate(entry.title)
+        new_items.append(f"🗞 {translated}\n🔗 {entry.link}")
+    if new_items:
+        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text="\n\n".join(new_items))
 
-# ✅ 시세 출력
-async def send_price():
-    coins = ['bitcoin', 'ethereum', 'xrp', 'solana', 'dogecoin']
-    url = f'https://api.coinpaprika.com/v1/tickers'
-    upbit_url = 'https://api.upbit.com/v1/ticker?markets=KRW-BTC,KRW-ETH,KRW-XRP,KRW-SOL,KRW-DOGE'
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.get(url, timeout=10)
-            upbit_res = await client.get(upbit_url, timeout=10)
-            data = res.json()
-            upbit_data = {item['market']: item for item in upbit_res.json()}
+# ✅ 5. 가격 전송
+async def send_price(context: ContextTypes.DEFAULT_TYPE):
+    coin_ids = {
+        "bitcoin": "비트코인",
+        "ethereum": "이더리움",
+        "ripple": "리플",
+        "solana": "솔라나",
+        "dogecoin": "도지코인",
+    }
+    msg = "💰 실시간 코인 시세\n\n"
+    async with httpx.AsyncClient() as client:
+        res = await client.get("https://api.coinpaprika.com/v1/tickers")
+        upbit = await client.get("https://api.upbit.com/v1/ticker?markets=KRW-BTC,KRW-ETH,KRW-XRP,KRW-SOL,KRW-DOGE")
 
-        filtered = [c for c in data if c['id'] in coins]
-        lines = []
-        for c in filtered:
-            cid = c['id']
-            symbol = c['symbol']
-            name = coin_kor.get(cid, cid)
-            price = float(c['quotes']['USD']['price'])
-            percent = c['quotes']['USD']['percent_change_1h']
-            change = f"📈 <b><font color='green'>▲{percent:.2f}%</font></b>" if percent > 0 else f"📉 <b><font color='red'>▼{abs(percent):.2f}%</font></b>"
+    coin_data = {c["id"]: c for c in res.json()}
+    upbit_data = {item["market"]: item for item in upbit.json()}
 
-            krw_key = f"KRW-{symbol}"
-            if krw_key in upbit_data:
-                krw_price = upbit_data[krw_key]['trade_price']
-                kimchi = ((krw_price / (price * 1300)) - 1) * 100
-                kimchi_text = f"🧂 김프: {kimchi:.2f}%"
-            else:
-                krw_price = None
-                kimchi_text = ""
+    for pid, name in coin_ids.items():
+        data = coin_data.get(pid, {})
+        price_usd = data.get("quotes", {}).get("USD", {}).get("price", 0)
+        change = data.get("quotes", {}).get("USD", {}).get("percent_change_1h", 0)
 
-            lines.append(f"💰 {symbol} ({name})\n💵 ${price:,.2f} | ₩{krw_price:,.0f if krw_price else 0}\n{change}  {kimchi_text}")
+        upbit_price = 0
+        if pid == "bitcoin":
+            upbit_price = upbit_data.get("KRW-BTC", {}).get("trade_price", 0)
+        elif pid == "ethereum":
+            upbit_price = upbit_data.get("KRW-ETH", {}).get("trade_price", 0)
+        elif pid == "ripple":
+            upbit_price = upbit_data.get("KRW-XRP", {}).get("trade_price", 0)
+        elif pid == "solana":
+            upbit_price = upbit_data.get("KRW-SOL", {}).get("trade_price", 0)
+        elif pid == "dogecoin":
+            upbit_price = upbit_data.get("KRW-DOGE", {}).get("trade_price", 0)
 
-        await application.bot.send_message(chat_id=CHAT_ID, text="\n\n".join(lines), parse_mode=constants.ParseMode.HTML)
+        kimchi_premium = (upbit_price / (price_usd * 1300) - 1) * 100 if price_usd else 0
 
-    except Exception as e:
-        logging.error(f"[가격 오류] {e}")
+        arrow = "📈" if change > 0 else "📉"
+        msg += (
+            f"{name} ({pid.upper()})\n"
+            f"{arrow} USD: ${price_usd:,.2f} ({change:+.2f}%)\n"
+            f"🇰🇷 원화: ₩{upbit_price:,.0f} | 김프: {kimchi_premium:+.2f}%\n\n"
+        )
 
-# ✅ 유저 입장 감지 + 고유 ID 부여
-async def track_join(update: ChatMemberUpdated, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=msg)
+
+# ✅ 유저 입장 감지 및 고유 ID 부여
+async def member_update(update: ChatMemberUpdated, context: ContextTypes.DEFAULT_TYPE):
+    if update.chat.id != int(GROUP_CHAT_ID):
+        return
     user = update.chat_member.new_chat_member.user
-    user_ids[str(user.id)] = user.username or user.full_name
-    text = f"👋 <b>{user.full_name}</b>님 환영합니다!\n\n👉 <b>1:1 채팅</b>으로 저를 눌러 대화해보세요!"
-    await context.bot.send_message(chat_id=update.chat.id, text=text, parse_mode=constants.ParseMode.HTML)
+    assign_user_id(user.id, user.username)
+    await context.bot.send_message(
+        chat_id=GROUP_CHAT_ID,
+        text=f"👋 {user.mention_html()}님 환영합니다!\n1:1 개인 메시지로 /start 입력해 기능을 사용해보세요.",
+        parse_mode=ParseMode.HTML,
+    )
 
-# ✅ 명령어: /price (DM 전용)
-async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.chat.type != Chat.PRIVATE:
-        return
-    if not is_user_allowed(str(update.effective_user.id)):
-        await update.message.reply_text("❌ 그룹방 참가자만 사용 가능")
-        return
-    await send_price()
+# ✅ Flask 서버
+@app.route("/")
+def index():
+    return "Coin Bot Running"
 
-# ✅ 명령어: /news (DM 전용)
-async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.chat.type != Chat.PRIVATE:
-        return
-    if not is_user_allowed(str(update.effective_user.id)):
-        await update.message.reply_text("❌ 그룹방 참가자만 사용 가능")
-        return
-    await send_news()
+# ✅ 메인
+async def main():
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("test", test_command))
+    application.add_handler(ChatMemberHandler(member_update, ChatMemberHandler.CHAT_MEMBER))
 
-# ✅ 명령어: /summary, /analyze (개발 중 placeholder)
-async def summary_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📊 요약 기능은 준비 중입니다.")
-
-async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📈 분석 기능은 준비 중입니다.")
-
-# ✅ Flask keep-alive
-@app.route('/')
-def home():
-    return 'Bot running'
-
-# ✅ 스케줄 시작
-def start_scheduler():
-    scheduler.add_job(lambda: asyncio.run(send_news()), 'interval', minutes=10)
-    scheduler.add_job(lambda: asyncio.run(send_price()), 'interval', minutes=2)
+    scheduler.add_job(send_news, "interval", minutes=30, args=[application.bot])
+    scheduler.add_job(send_price, "interval", minutes=2, args=[application.bot])
     scheduler.start()
 
-# ✅ 핸들러 등록
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("help", help_cmd))
-application.add_handler(CommandHandler("test", test_cmd))
-application.add_handler(CommandHandler("price", price_cmd))
-application.add_handler(CommandHandler("news", news_cmd))
-application.add_handler(CommandHandler("summary", summary_cmd))
-application.add_handler(CommandHandler("analyze", analyze_cmd))
-application.add_handler(ChatMemberHandler(track_join, ChatMemberHandler.CHAT_MEMBER))
+    await application.run_polling()
 
-# ✅ 메인 실행
-if __name__ == '__main__':
-    start_scheduler()
+# ✅ 실행
+if __name__ == "__main__":
     import threading
-    threading.Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': 10000}).start()
-    application.run_polling()
+
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000)).start()
+    asyncio.run(main())
