@@ -1,0 +1,52 @@
+services:
+  - type: web
+    name: coin-longshort-web
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 1 -b 0.0.0.0:$PORT app:flask_app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.13
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: GROUP_CHAT_ID
+        sync: false
+      - key: ADMIN_USER_ID
+        sync: false
+      - key: WATCHLIST
+        value: BTCUSDT,ETHUSDT
+      - key: PUMP_THRESHOLD_PCT
+        value: "2.5"
+      - key: TZ
+        value: Asia/Seoul
+
+  - type: worker
+    name: coin-longshort-worker
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -c "import app; app.main()"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.13
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: GROUP_CHAT_ID
+        sync: false
+      - key: ADMIN_USER_ID
+        sync: false
+      - key: WATCHLIST
+        value: BTCUSDT,ETHUSDT
+      - key: PUMP_THRESHOLD_PCT
+        value: "2.5"
+      - key: TZ
+        value: Asia/Seoul
